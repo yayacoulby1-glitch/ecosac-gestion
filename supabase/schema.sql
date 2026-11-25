@@ -116,3 +116,11 @@ grant execute on function public.ajouter_membre(text, text) to authenticated;
 do $$ begin
   alter publication supabase_realtime add table public.records;
 exception when duplicate_object then null; end $$;
+
+-- 7. Droits d'accès aux tables (les nouveaux projets Supabase n'en donnent pas par défaut).
+-- Les règles RLS ci-dessus décident ensuite, ligne par ligne, de ce que chaque compte voit.
+grant usage on schema public to authenticated;
+grant select, insert, update, delete on public.records to authenticated;
+grant select, update, delete on public.membres to authenticated;
+grant execute on function public.est_membre(), public.est_admin() to authenticated;
+revoke all on public.records, public.membres from anon;
