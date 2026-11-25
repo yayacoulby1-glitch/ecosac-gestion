@@ -5,5 +5,5 @@
 // Laissez vide pour utiliser l'application en mode local (données gardées dans ce navigateur).
 window.ECOSAC_CONFIG = {
   supabaseUrl: 'https://layphezztsejjzvnjgqm.supabase.co',
-  supabaseKey: '',
+  supabaseKey: 'sb_publishable_tvKLynyRNNAHG36Jqkejng_Dwp7odX6',
 };
