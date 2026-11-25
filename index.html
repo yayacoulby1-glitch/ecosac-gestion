@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>ECOSAC Gestion</title>
+<meta name="description" content="Gestion de l'usine ECOSAC : achats, production, stock, ventes et prix de revient.">
+<meta name="theme-color" content="#2f7a47">
+<meta name="robots" content="noindex">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@500;600;700&family=Inter:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="side" id="side" aria-label="Menu">
+    <div class="brand"><div class="logo" data-ic="bag"></div><div><b>ECOSAC</b><small>Sacs en papier kraft</small></div></div>
+    <nav class="nav" id="nav"></nav>
+    <div class="side-foot"><div class="side-card"><div class="status" id="status"><span class="dot"></span><span>Connexion…</span></div><button data-act="demo-toggle" id="demoBtn">Voir un exemple rempli</button><div class="who" id="who" hidden></div></div></div>
+  </aside>
+  <div class="scrim" data-act="closemenu"></div>
+  <div class="col">
+    <header class="topbar wrap">
+      <button class="iconbtn m-only" data-act="menu" aria-label="Ouvrir le menu" data-ic="menu"></button><div class="logo m-only" data-ic="bag"></div><b class="m-only">ECOSAC</b>
+      <div class="crumb d-only" id="crumb"></div>
+      <div class="sp"></div>
+      <button class="cmdk d-only" data-act="quick" aria-label="Rechercher ou saisir"><span data-ic="search"></span><span class="ct">Rechercher ou saisir…</span><kbd>Ctrl K</kbd></button>
+      <button class="btn primary d-only" data-act="quick"><span data-ic="plus"></span>Nouvelle saisie</button>
+      <button class="iconbtn m-only" data-act="quick" aria-label="Nouvelle saisie" data-ic="plus"></button>
+    </header>
+    <main class="wrap" id="app"><div class="empty"><b>Chargement de vos données…</b>Un instant.</div></main>
+  </div>
+</div>
+<nav class="bottom" id="bottom" aria-label="Navigation principale"></nav>
+<button class="fab" data-act="quick" aria-label="Nouvelle saisie" data-ic="plus"></button>
+<div class="tip" id="tip" hidden></div>
+<div id="layer"></div>
+<div class="auth" id="auth" hidden></div>
+<script src="js/vendor/supabase-2.118.0.js"></script>
+<script src="js/config.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
