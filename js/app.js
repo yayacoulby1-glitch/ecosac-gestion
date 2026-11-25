@@ -357,15 +357,20 @@ async function boot(){
   sb.auth.onAuthStateChange((ev, session) => {
     if (ev === 'PASSWORD_RECOVERY') return showAuth('nouveau');
     if (ev === 'SIGNED_OUT') { user = null; membre = null; equipe = []; if (chan) { sb.removeChannel(chan); chan = null; } mode = 'loading'; COLS.forEach(c => S[c] = []); document.body.classList.remove('menu'); drawUser(); render(); showAuth('login'); }
-    if (ev === 'SIGNED_IN' && session && (!user || user.id !== session.user.id)) setTimeout(() => enter(session.user), 0);
+    if (ev === 'SIGNED_IN' && session && (!user || user.id !== session.user.id || !membre)) setTimeout(() => enter(session.user), 0);
   });
   const { data } = await sb.auth.getSession();
   if (data.session) await enter(data.session.user); else showAuth('login');
 }
-async function enter(u){
+let entering = null;
+function enter(u){ if (entering && user && user.id === u.id) return entering; entering = enter2(u).finally(() => { entering = null; }); return entering; }
+async function enter2(u){
   user = u;
-  const { data:m, error } = await sb.from('membres').select('*').eq('user_id', u.id).maybeSingle();
-  if (error) { showAuth('login', "Connexion impossible au serveur. Vérifiez internet et réessayez."); return; }
+  let { data:m, error } = await sb.from('membres').select('*').eq('user_id', u.id).maybeSingle();
+  if (error) { console.warn(error); showAuth('login', errText(error)); return; }
+  if (!m) { // Personne n'est encore administrateur : le premier compte connecté le devient.
+    const r = await sb.rpc('reclamer_admin'); if (!r.error && r.data === true) ({ data:m } = await sb.from('membres').select('*').eq('user_id', u.id).maybeSingle());
+  }
   if (!m) { showAuth('attente'); return; }
   membre = m; hideAuth(); mode = 'db'; setStatus('loc','Chargement de vos données…'); drawUser();
   try { await loadAll(); } catch(e){ setStatus('loc','Erreur de chargement, actualisez la page'); }
@@ -462,28 +467,48 @@ function showAuth(kind, msg){
   const f = el.querySelector('input'); if (f) setTimeout(() => f.focus(), 50);
 }
 function hideAuth(){ const el = $('#auth'); el.hidden = true; el.innerHTML = ''; document.body.classList.remove('locked'); }
+// Traduit les erreurs Supabase en phrases claires.
+function errText(e){
+  const m = String(e && (e.message || e.msg || e.error_description) || e || ''), c = e && (e.code || e.error_code) || '';
+  if (/délai/.test(m)) return m;
+  if (/not confirmed|email_not_confirmed/i.test(m+c)) return "Votre adresse n'est pas encore confirmée. Ouvrez le lien reçu par e-mail (regardez aussi dans les spams), puis reconnectez-vous.";
+  if (/invalid login|invalid_credentials/i.test(m+c)) return "E-mail ou mot de passe incorrect. Pas encore de compte ? Cliquez sur « Créer un compte » ci-dessous.";
+  if (/already registered|already exists|user_already_exists/i.test(m+c)) return 'Un compte existe déjà avec cette adresse. Cliquez sur « Retour à la connexion ».';
+  if (/rate limit|too many|over_email_send_rate/i.test(m+c)) return "Trop d'essais en peu de temps. Attendez quelques minutes puis réessayez.";
+  if (/password/i.test(m) && /6|8|short|weak/i.test(m)) return 'Mot de passe trop court ou trop simple. Utilisez au moins 8 caractères.';
+  if (/valid email|invalid.*email|email_address_invalid/i.test(m+c)) return "L'adresse e-mail n'est pas valide.";
+  if (/fetch|network|load failed/i.test(m)) return "Impossible de joindre le serveur. Vérifiez votre connexion internet.";
+  if (/PGRST205|42P01|schema cache/i.test(m+c)) return "La base de données n'est pas encore installée : exécutez le fichier schema.sql dans Supabase (SQL Editor).";
+  return 'Erreur : ' + (m || 'inconnue');
+}
+const delai = (pr, ms=20000) => Promise.race([pr, new Promise((_, rej) => setTimeout(() => rej(new Error("Le serveur ne répond pas (délai dépassé). Vérifiez votre connexion internet et réessayez.")), ms))]);
+function authMsg(t, ok){ const el = $('#a_msg'); if (!el) return; el.textContent = t || ''; el.classList.toggle('ok', !!ok); }
 async function authSubmit(){
-  const v = id => ($('#'+id)?.value || '').trim(); const msg = t => { $('#a_msg').textContent = t; };
-  const btn = $('#authf button[type=submit]'); btn.disabled = true; msg('');
+  const v = id => ($('#'+id)?.value || '').trim(); const msg = authMsg;
+  const btn = $('#authf button[type=submit]'); const label = btn.textContent;
+  if (authKind !== 'nouveau' && !v('a_mail')) return msg('Saisissez votre adresse e-mail.');
+  if ((authKind === 'login' || authKind === 'signup' || authKind === 'nouveau') && !$('#a_pass').value) return msg('Saisissez votre mot de passe.');
+  if ((authKind === 'signup' || authKind === 'nouveau') && $('#a_pass').value.length < 8) return msg('Le mot de passe doit faire au moins 8 caractères.');
+  btn.disabled = true; btn.textContent = 'Un instant…'; msg('');
   try {
     if (authKind === 'login') {
-      const { error } = await sb.auth.signInWithPassword({email:v('a_mail'), password:$('#a_pass').value});
-      if (error) msg(/confirm/i.test(error.message) ? "Confirmez d'abord votre adresse avec le lien reçu par e-mail." : 'E-mail ou mot de passe incorrect.');
+      const { data, error } = await delai(sb.auth.signInWithPassword({email:v('a_mail'), password:$('#a_pass').value}));
+      if (error) msg(errText(error));
+      else if (data && data.user) await enter(data.user);
     } else if (authKind === 'signup') {
-      if ($('#a_pass').value.length < 8) return msg('Le mot de passe doit faire au moins 8 caractères.');
-      const { data, error } = await sb.auth.signUp({email:v('a_mail'), password:$('#a_pass').value, options:{data:{nom:v('a_nom')}, emailRedirectTo:location.origin+location.pathname}});
-      if (error) msg(/registered|exists/i.test(error.message) ? 'Un compte existe déjà avec cette adresse.' : "La création a échoué : "+error.message);
-      else if (!data.session) { showAuth('login', ''); $('#a_msg').textContent = 'Compte créé. Ouvrez le lien reçu par e-mail pour confirmer votre adresse, puis connectez-vous.'; $('#a_msg').classList.add('ok'); }
+      const { data, error } = await delai(sb.auth.signUp({email:v('a_mail'), password:$('#a_pass').value, options:{data:{nom:v('a_nom')}, emailRedirectTo:location.origin+location.pathname}}));
+      if (error) msg(errText(error));
+      else if (data.session) await enter(data.session.user);
+      else { const mail = v('a_mail'); showAuth('login'); $('#a_mail').value = mail; authMsg('Compte créé. Ouvrez le lien de confirmation reçu par e-mail (regardez aussi dans les spams), puis connectez-vous ici.', true); }
     } else if (authKind === 'oubli') {
-      const { error } = await sb.auth.resetPasswordForEmail(v('a_mail'), {redirectTo:location.origin+location.pathname});
-      if (error) msg("L'envoi a échoué. Réessayez."); else { msg('Lien envoyé. Regardez votre boîte e-mail.'); $('#a_msg').classList.add('ok'); }
+      const { error } = await delai(sb.auth.resetPasswordForEmail(v('a_mail'), {redirectTo:location.origin+location.pathname}));
+      if (error) msg(errText(error)); else msg('Lien envoyé. Regardez votre boîte e-mail.', true);
     } else if (authKind === 'nouveau') {
-      if ($('#a_pass').value.length < 8) return msg('Le mot de passe doit faire au moins 8 caractères.');
-      const { error } = await sb.auth.updateUser({password:$('#a_pass').value});
-      if (error) msg("L'enregistrement a échoué."); else { const { data } = await sb.auth.getSession(); if (data.session) enter(data.session.user); }
+      const { error } = await delai(sb.auth.updateUser({password:$('#a_pass').value}));
+      if (error) msg(errText(error)); else { const { data } = await sb.auth.getSession(); if (data.session) await enter(data.session.user); }
     }
-  } catch(e){ msg('Pas de connexion internet. Réessayez.'); }
-  finally { if (btn.isConnected) btn.disabled = false; }
+  } catch(e){ console.warn(e); msg(errText(e)); }
+  finally { if (btn.isConnected) { btn.disabled = false; btn.textContent = label; } }
 }
 
 // ---------- Calculs ----------

@@ -80,6 +80,21 @@ drop trigger if exists premier_admin on auth.users;
 create trigger premier_admin after insert on auth.users
   for each row execute function public.premier_admin();
 
+-- 4 bis. Si personne n'est encore administrateur (compte créé avant ce script),
+-- le premier compte qui se connecte le devient.
+create or replace function public.reclamer_admin() returns boolean
+language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is null then return false; end if;
+  lock table public.membres in exclusive mode;
+  if exists (select 1 from public.membres) then return false; end if;
+  insert into public.membres (user_id, email, nom, role)
+  select id, email, coalesce(raw_user_meta_data->>'nom', ''), 'admin' from auth.users where id = auth.uid();
+  return true;
+end $$;
+revoke all on function public.reclamer_admin() from public, anon;
+grant execute on function public.reclamer_admin() to authenticated;
+
 -- 5. L'administrateur donne accès à une personne qui a créé son compte ----------------
 create or replace function public.ajouter_membre(p_email text, p_role text default 'saisie') returns text
 language plpgsql security definer set search_path = public as $$
