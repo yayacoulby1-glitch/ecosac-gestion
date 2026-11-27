@@ -176,7 +176,7 @@ const SCHEMAS = {
       {k:'prix_vente',label:'Prix de vente par sac (FCFA)',type:'number'},
       {k:'notes',label:'Notes (dimensions, grammage…)',type:'textarea',full:1},
     ],
-    auto: (v, changed) => { if (!['longueur','largeur','cote','grammage'].includes(changed)) return {}; const e = estimePapier(v); return e ? {g_papier:+e.g.toFixed(1)} : {}; },
+    auto: (v, changed) => { if (!['longueur','largeur','cote','grammage'].includes(changed)) return {}; const e = estimePapier(v); const r = calcSac({L:v.largeur, H:v.longueur, S:v.cote, g:v.grammage}); return e ? {g_papier:+e.g.toFixed(1), g_colle:+(r.gL+r.gF).toFixed(2)} : {}; },
     calc: v => { const m = moyennes(); const e = estimePapier(v); const mat = num(v.g_papier)/1000*m.kraft + num(v.g_colle)/1000*m.colle + num(v.cout_impression);
       return [...(e?[['Feuille de papier par sac', `${nf1.format(e.w)} × ${nf1.format(e.h)} cm`],['Poids de papier estimé', nf1.format(e.g)+' g']]:[]),['Papier + colle + impression', F2(mat)],['Frais fixes par sac (moyenne)', F2(analyse(null,null).fixeParSac)],['Prix de revient estimé', F2(mat+analyse(null,null).fixeParSac),'t']]; },
     cols:[[r=>esc(r.nom)+(r.exemple?' <span class="pill warn">exemple</span>':''),'Produit',null,'html'],[r=>CATS[r.categorie]||'','Famille'],[r=>dims(r),'Dimensions (cm)'],[r=>num(r.grammage)?nf0.format(num(r.grammage))+' g/m²':'','Grammage'],['g_papier','Papier (g)',nf1.format.bind(nf1),'num'],['g_colle','Colle (g)',nf2.format.bind(nf2),'num'],['cout_impression','Impression',F2,'num'],[r=>coutUnitaire(r.id),'Prix de revient',F2,'num'],['prix_vente','Prix de vente',F2,'num']],
@@ -299,6 +299,23 @@ SCHEMAS.sorties = {
   ],
   calc: v => { const f = fourniture(v.article); return f ? [['En stock avant cette sortie', nf2.format(f.reste + (form&&form.id?num(S.sorties.find(x=>x.id===form.id)?.quantite):0))+' '+f.unite],['Valeur de cette sortie', F(num(v.quantite)*f.pu),'t']] : [['Article','pas encore acheté']]; },
   cols:[['date','Date',fdate],['article','Article'],[r=>nf2.format(num(r.quantite))+' '+esc(fourniture(r.article)?.unite||''),'Quantité',null,'html'],['notes','Notes']],
+};
+SCHEMAS.estimations = {
+  title:'Estimation', plural:'Estimations',
+  fields:[
+    {k:'date',label:'Date',type:'date',req:1,def:today},
+    {k:'type',label:'Type',type:'select',options:[['PRV','Prévisionnel (production prévue)'],['DEV','Devis client'],['SIM','Simulation (essai, nouveau format)']],def:'PRV'},
+    {k:'reference',label:'Référence',type:'text',req:1,h:'Type-année mois-numéro, ex. PRV-2611-01'},
+    {k:'nom',label:'Nom',type:'text',req:1,full:1},
+    {k:'client',label:'Client (pour un devis)',type:'client'},
+    {k:'quantite',label:'Quantité prévue (sacs)',type:'number'},
+    {k:'notes',label:'Notes',type:'textarea',full:1},
+  ],
+  auto: (v, changed) => changed==='type' && /^(PRV|DEV|SIM)-\d{4}-\d+$/.test(v.reference||'') ? {reference: nextRef(v.type)} : {},
+  calc: v => v.res ? [['Sacs par tonne', N(v.res.net)],["Papier par sac", nf1.format(v.res.poids)+' g'],['Colle par sac', nf2.format(num(v.res.gL)+num(v.res.gF))+' g · '+F2(v.res.colle)],['Coût de fabrication par sac', F2(v.res.total),'t']].concat(num(v.quantite)?[['Coût pour '+N(num(v.quantite))+' sacs', F(num(v.quantite)*num(v.res.total))]]:[]) : [],
+  cols:[['date','Date',fdate],['reference','Référence'],[r=>(TYPES_EST.find(t=>t[0]===r.type)||['',''])[1],'Type'],['nom','Nom'],[r=>r.client?clientNom(r.client):'','Client'],[r=>num(r.quantite),'Quantité',v=>v?N(v):'','num'],
+    [r=>num(r.res?.net),'Sacs / tonne',v=>v?N(v):'','num'],[r=>num(r.res?.total),'Coût / sac',v=>v?F2(v):'','num'],
+    [r=>r.cx?`<button class="btn small" data-act="cx-load" data-id="${esc(r.id)}">Ouvrir</button>`:'','',null,'html']],
 };
 const COLS = Object.keys(SCHEMAS).concat(['parametres']);
 
@@ -610,81 +627,145 @@ function periode(k){
 }
 const PERIODES = [['mois','Ce mois'],['prec','Mois dernier'],['3m','3 derniers mois'],['annee','Cette année'],['tout','Depuis le début']];
 
-// ---------- Calculatrice : sacs par tonne de papier ----------
+// ---------- Calculatrice : sacs par tonne, colle et coût de fabrication ----------
 // Feuille : largeur = 2 × largeur du sac + 2 × soufflet + collage latéral ; longueur = hauteur + coef × soufflet + rabat.
-const MARGES_DEF = {collage:3, rabat:3, coef:0.75, chutes:4};
+// Colle (estimation) : latérale = longueur du joint (longueur de feuille) × g par mètre ; fond = (largeur + soufflet) × g par mètre.
+const MARGES_DEF = {collage:3, rabat:3, coef:0.75, chutes:4, gl:0.6, gf:1.0, plp:177000, plk:150, pfp:55000, pfk:25};
 function marges(){ const c = config(); const r = {}; for (const k in MARGES_DEF) r[k] = c['m_'+k] !== undefined && c['m_'+k] !== '' ? num(c['m_'+k]) : MARGES_DEF[k]; return r; }
 function calcSac(x){
-  const L = num(x.L), H = num(x.H), Sf = num(x.S), g = num(x.g), m = x.m || marges();
+  const L = num(x.L), H = num(x.H), Sf = num(x.S), g = num(x.g), m = {...MARGES_DEF, ...(x.m || marges())};
   if (!L || !H || !g) return null;
   const fl = 2*L + 2*Sf + num(m.collage), fh = H + (Sf ? num(m.coef)*Sf : 0) + num(m.rabat);
-  const surf = fl*fh/10000, poids = surf*g, brut = 1e6/poids, net = brut*(1 - num(m.chutes)/100);
-  return {fl, fh, surf, poids, brut, net, kgMille: poids*1000/1000/(1 - num(m.chutes)/100)};
+  const surf = fl*fh/10000, poids = surf*g, brut = 1e6/poids, ch = Math.min(num(m.chutes), 90)/100, net = brut*(1 - ch);
+  const gL = fh/100*num(m.gl), gF = (L + Sf)/100*num(m.gf);
+  const pkL = num(m.plk) ? num(m.plp)/num(m.plk) : 0, pkF = num(m.pfk) ? num(m.pfp)/num(m.pfk) : 0;
+  return {fl, fh, surf, poids, brut, net, kgMille: poids/(1 - ch), gL, gF, pkL, pkF, colleCout: gL/1000*pkL + gF/1000*pkF};
 }
-let CX = {prod:'', L:'', H:'', S:'', g:80, bob:'', cmd:''}, CXm = null, CXopen = false;
+// Coût complet d'un sac à partir d'un état de calculatrice
+function coutSac(x, r){
+  const pk = x.pk !== '' && x.pk != null ? num(x.pk) : moyennes().kraft;
+  const papier = r.kgMille/1000*pk, colle = r.colleCout, impr = num(x.impr);
+  const frais = x.frais ? fraisSac() : 0;
+  return {pk, papier, colle, impr, frais, total: papier + colle + impr + frais};
+}
+function fraisSac(){ const [a,b] = (()=>{ const d = new Date(); const e = d.toISOString().slice(0,10); d.setMonth(d.getMonth()-3); return [d.toISOString().slice(0,10), e]; })(); return analyse(a,b).fixeParSac; }
+const TYPES_EST = [['PRV','Prévisionnel'],['DEV','Devis client'],['SIM','Simulation']];
+function nextRef(type){
+  const d = new Date(), p = `${type}-${String(d.getFullYear()).slice(2)}${String(d.getMonth()+1).padStart(2,'0')}-`;
+  const n = S.estimations.filter(e => String(e.reference||'').startsWith(p)).map(e => +String(e.reference).slice(p.length)||0);
+  return p + String((n.length ? Math.max(...n) : 0) + 1).padStart(2,'0');
+}
+const CX_DEF = {prod:'', L:'', H:'', S:'', g:80, bob:'', cmd:'', pk:'', impr:'', pv:'', frais:false};
+let CX = {...CX_DEF}, CXm = null, CXopen = false;
 document.addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('marges')) CXopen = e.target.open; }, true);
 try { const s = JSON.parse(localStorage.getItem(LS+'-calc')||'null'); if (s) CX = {...CX, ...s}; } catch(e){}
 function vCalcul(){
-  const m = CXm || marges();
+  const m = CXm || marges(); const mk = moyennes().kraft;
   const opts = S.produits.filter(p=>num(p.largeur)&&num(p.longueur)).map(p=>`<option value="${esc(p.id)}" ${CX.prod===p.id?'selected':''}>${esc(p.nom)} · ${dims(p)}</option>`).join('');
-  const inp = (k, l, h, step) => `<div class="field"><label for="cx_${k}">${l}</label><input id="cx_${k}" data-cx="${k}" type="number" inputmode="decimal" step="${step||'any'}" min="0" value="${esc(CX[k]??'')}">${h?`<small class="h">${h}</small>`:''}</div>`;
+  const inp = (k, l, h, ph) => `<div class="field"><label for="cx_${k}">${l}</label><input id="cx_${k}" data-cx="${k}" type="number" inputmode="decimal" step="any" min="0" value="${esc(CX[k]??'')}" ${ph?`placeholder="${esc(ph)}"`:''}>${h?`<small class="h">${h}</small>`:''}</div>`;
   const minp = (k, l, h) => `<div class="field"><label for="cm_${k}">${l}</label><input id="cm_${k}" data-cm="${k}" type="number" inputmode="decimal" step="any" min="0" value="${esc(m[k])}">${h?`<small class="h">${h}</small>`:''}</div>`;
   const rows = S.produits.map(p => ({p, r: calcSac({L:p.largeur, H:p.longueur, S:p.cote, g:p.grammage, m})})).filter(x=>x.r);
-  return `<div class="head"><div><h2>Calculatrice papier</h2><p class="lead">Combien de sacs sortent d'une tonne de papier kraft, selon les dimensions et le grammage. Les résultats se mettent à jour pendant la saisie.</p></div></div>
+  return `<div class="head"><div><h2>Calculatrice papier</h2><p class="lead">Sacs par tonne, papier et colle consommés, et coût de fabrication d'un sac. Les résultats se mettent à jour pendant la saisie. Enregistrez un calcul pour le retrouver plus tard.</p></div></div>
   <div class="grid calc-grid">
     <div class="panel"><h3>Le sac</h3>
       <div class="fields flat">
         <div class="field full"><label for="cx_prod">Partir d'un sac du catalogue</label><select id="cx_prod" data-cx="prod"><option value="">Saisie libre</option>${opts}</select></div>
         ${inp('L','Largeur L (cm)','Face avant du sac')}${inp('H','Hauteur H (cm)')}
         ${inp('S','Soufflet S (cm)','0 pour un sac plat')}${inp('g','Grammage (g/m²)')}
-        ${inp('bob','Poids d\'une bobine (kg)','Facultatif')}${inp('cmd','Commande à produire (sacs)','Facultatif')}
+        ${inp('cmd','Quantité à produire (sacs)','Facultatif')}${inp('bob','Poids d\'une bobine (kg)','Facultatif')}
       </div>
-      <details class="marges" ${CXm||CXopen?'open':''}><summary>Marges de fabrication <span class="note">collage ${nf1.format(m.collage)} cm · rabat ${nf1.format(m.rabat)} cm · fond ${nf2.format(m.coef)} × S · chutes ${nf1.format(m.chutes)} %</span></summary>
+      <h3 style="margin-top:22px">Coûts</h3>
+      <div class="fields flat">
+        ${inp('pk','Prix du papier (FCFA/kg)', mk ? `Vide = moyenne de vos conteneurs (${F(mk)}/kg)` : 'Ou saisissez vos conteneurs dans Achats', mk ? Math.round(mk) : '')}
+        ${inp('impr','Impression par sac (FCFA)','Encre, cliché… 0 si sans impression')}
+        ${inp('pv','Prix de vente par sac (FCFA)','Facultatif, pour voir la marge')}
+        <div class="field"><label class="check"><input type="checkbox" data-cx="frais" ${CX.frais?'checked':''}> Ajouter les frais généraux</label><small class="h">Personnel, électricité, fournitures… par sac, moyenne des 3 derniers mois</small></div>
+      </div>
+      <details class="marges" ${CXm||CXopen?'open':''}><summary>Marges et colle <span class="note" id="cm_sum">${margesTxt(m)}</span></summary>
         <div class="fields flat">${minp('collage','Collage latéral (cm)','Ajouté à la largeur de la feuille')}${minp('rabat','Rabat (cm)','Ajouté à la longueur de la feuille')}${minp('coef','Coefficient du fond','Part du soufflet repliée au fond (0,75)')}${minp('chutes','Taux de chutes (%)','Papier perdu : réglages, ratés, fins de bobine')}</div>
-        <div class="sheetbar"><button class="btn" data-act="marges-save">Enregistrer comme marges par défaut</button><button class="btn" data-act="marges-reset">Valeurs d'origine</button></div>
-        <p class="note">Les marges enregistrées servent aussi au calcul des bobines et des produits.</p>
+        <div class="subh">Colle latérale</div>
+        <div class="fields flat three">${minp('gl','Grammes par mètre de joint','Estimation à ajuster')}${minp('plp','Prix du lot (FCFA)')}${minp('plk','Poids du lot (kg)')}</div>
+        <div class="subh">Colle de fond</div>
+        <div class="fields flat three">${minp('gf','Grammes par mètre de fond','Estimation à ajuster')}${minp('pfp','Prix du lot (FCFA)')}${minp('pfk','Poids du lot (kg)')}</div>
+        <div class="sheetbar"><button class="btn" data-act="marges-save">Enregistrer comme valeurs par défaut</button><button class="btn" data-act="marges-reset">Valeurs d'origine</button></div>
+        <p class="note">La consommation de colle est une estimation. Pour l'ajuster : pesez la colle utilisée sur une production, divisez par le nombre de sacs, et corrigez les grammes par mètre. Les marges enregistrées servent aussi au calcul des bobines et des produits.</p>
       </details>
     </div>
     <div id="cx_out">${calcOut()}</div>
   </div>
-  ${rows.length?`<h3 style="margin:28px 0 12px">Votre catalogue</h3><div class="tw"><table><thead><tr><th>Sac</th><th>Dimensions</th><th class="num">Grammage</th><th class="num">Feuille (cm)</th><th class="num">Poids d'un sac</th><th class="num">Sacs par tonne</th></tr></thead><tbody>
-    ${rows.map(({p,r})=>`<tr><td>${esc(p.nom)}</td><td>${dims(p)}</td><td class="num">${N(p.grammage)} g/m²</td><td class="num">${nf1.format(r.fl)} × ${nf1.format(r.fh)}</td><td class="num">${nf1.format(r.poids)} g</td><td class="num"><b>${N(Math.floor(r.net))}</b></td></tr>`).join('')}
+  <div class="head" style="margin:32px 0 14px"><div><h3 style="margin:0">Estimations enregistrées</h3><p class="lead">Référence : <b>PRV</b> prévisionnel (production prévue), <b>DEV</b> devis client, <b>SIM</b> simulation (nouveau format, essai), puis l'année et le mois, puis un numéro. Exemple : PRV-${String(new Date().getFullYear()).slice(2)}${String(new Date().getMonth()+1).padStart(2,'0')}-01.</p></div></div>
+  ${listBlock('estimations')}
+  ${rows.length?`<h3 style="margin:28px 0 12px">Votre catalogue</h3><div class="tw"><table><thead><tr><th>Sac</th><th>Dimensions</th><th class="num">Grammage</th><th class="num">Feuille (cm)</th><th class="num">Papier</th><th class="num">Colle</th><th class="num">Sacs par tonne</th></tr></thead><tbody>
+    ${rows.map(({p,r})=>`<tr><td>${esc(p.nom)}</td><td>${dims(p)}</td><td class="num">${N(p.grammage)} g/m²</td><td class="num">${nf1.format(r.fl)} × ${nf1.format(r.fh)}</td><td class="num">${nf1.format(r.poids)} g</td><td class="num">${nf2.format(r.gL+r.gF)} g</td><td class="num"><b>${N(Math.floor(r.net))}</b></td></tr>`).join('')}
   </tbody></table></div>`:''}`;
 }
+const margesTxt = m => `collage ${nf1.format(m.collage)} cm · rabat ${nf1.format(m.rabat)} cm · fond ${nf2.format(m.coef)} × S · chutes ${nf1.format(m.chutes)} % · colle ${nf1.format(m.gl)} et ${nf1.format(m.gf)} g/m`;
 function calcOut(){
   const m = CXm || marges(); const r = calcSac({...CX, m});
   if (!r) return `<div class="panel"><div class="empty"><b>Saisissez la largeur, la hauteur et le grammage</b>ou choisissez un sac du catalogue.</div></div>`;
-  const pk = moyennes().kraft, bob = num(CX.bob), cmd = num(CX.cmd);
+  const c = coutSac(CX, r), bob = num(CX.bob), cmd = num(CX.cmd), pv = num(CX.pv);
   const line = (l, v, cls) => `<div class="${cls||''}"><span>${l}</span><span>${v}</span></div>`;
+  const marge = pv ? pv - c.total : null;
   return `<div class="grid kpis cx-kpis">
       ${kpi('Sacs par tonne', N(Math.floor(r.net)), `après ${nf1.format(m.chutes)} % de chutes · ${N(Math.floor(r.brut))} sans chutes`, 'hero')}
-      ${kpi("Poids d'un sac", nf1.format(r.poids)+' g', `${nf2.format(r.surf)} m² de papier`)}
+      ${kpi('Coût de fabrication', c.pk || c.impr ? F2(c.total) : '—', c.pk ? `par sac${marge!==null?` · marge ${F2(marge)} (${nf0.format(marge/pv*100)} %)`:''}` : 'Indiquez le prix du papier')}
     </div>
-    <div class="panel" style="margin-top:16px"><h3>Détail du calcul</h3><div class="calc cx-detail">
+    <div class="panel" style="margin-top:16px"><h3>Papier</h3><div class="calc cx-detail">
       ${line('Largeur de feuille', `2 × ${nf1.format(num(CX.L))} + 2 × ${nf1.format(num(CX.S))} + ${nf1.format(m.collage)} = <b>${nf1.format(r.fl)} cm</b>`)}
       ${line('Longueur de feuille', `${nf1.format(num(CX.H))} + ${nf2.format(m.coef)} × ${nf1.format(num(CX.S))} + ${nf1.format(m.rabat)} = <b>${nf1.format(r.fh)} cm</b>`)}
       ${line('Surface', `${nf1.format(r.fl)} × ${nf1.format(r.fh)} ÷ 10 000 = ${nf2.format(r.surf)} m²`)}
-      ${line("Poids d'un sac", `${nf2.format(r.surf)} × ${N(CX.g)} g/m² = ${nf1.format(r.poids)} g`)}
+      ${line("Poids d'un sac", `${nf2.format(r.surf)} × ${N(CX.g)} g/m² = <b>${nf1.format(r.poids)} g</b>`)}
       ${line('Sacs par tonne', `1 000 000 ÷ ${nf1.format(r.poids)} = ${N(Math.floor(r.brut))}`)}
       ${line(`Moins ${nf1.format(m.chutes)} % de chutes`, N(Math.floor(r.net)), 't')}
       ${line('Papier pour 1 000 sacs', nf1.format(r.kgMille)+' kg')}
-      ${pk?line('Coût du papier par sac', F(r.kgMille/1000*pk)+` <span class="note">(kraft à ${F(pk)}/kg)</span>`):''}
-      ${bob?line(`Sacs par bobine de ${N(bob)} kg`, N(Math.floor(r.net*bob/1000)), 't'):''}
+      ${bob?line(`Sacs par bobine de ${N(bob)} kg`, N(Math.floor(r.net*bob/1000))):''}
       ${bob?line('Laize conseillée', nf1.format(r.fl)+' cm'):''}
-      ${cmd?line(`Papier pour ${N(cmd)} sacs`, nf1.format(cmd*r.kgMille/1000)+' kg'+(pk?' · '+F(cmd*r.kgMille/1000*pk):''), 't'):''}
-    </div></div>`;
+    </div></div>
+    <div class="panel" style="margin-top:16px"><h3>Colle <span class="pill warn">estimation</span></h3><div class="calc cx-detail">
+      ${line('Colle latérale', `${nf2.format(r.fh/100)} m × ${nf1.format(m.gl)} g/m = <b>${nf2.format(r.gL)} g</b>`)}
+      ${line('Colle de fond', `${nf2.format((num(CX.L)+num(CX.S))/100)} m × ${nf1.format(m.gf)} g/m = <b>${nf2.format(r.gF)} g</b>`)}
+      ${line('Prix au kg', `latérale ${F(r.pkL)} · fond ${F(r.pkF)}`)}
+      ${line('Coût de la colle par sac', F2(r.colleCout), 't')}
+      ${line('Colle pour 1 000 sacs', `${nf2.format(r.gL)} kg latérale + ${nf2.format(r.gF)} kg fond`)}
+    </div></div>
+    <div class="panel" style="margin-top:16px"><h3>Coût de fabrication d'un sac</h3><div class="calc cx-detail">
+      ${line('Papier (chutes comprises)', c.pk ? `${nf1.format(r.kgMille)} g × ${F(c.pk)}/kg = ${F2(c.papier)}` : '<span class="note">prix du papier manquant</span>')}
+      ${line('Colle latérale + fond', F2(c.colle))}
+      ${c.impr?line('Impression', F2(c.impr)):''}
+      ${CX.frais?line('Frais généraux', c.frais ? F2(c.frais) : '<span class="note">pas encore de production saisie</span>'):''}
+      ${line('Total par sac', F2(c.total), 't')}
+      ${pv?line('Prix de vente', F2(pv)):''}
+      ${pv?line('Marge par sac', `<b class="${marge>=0?'good-t':'bad-t'}">${F2(marge)} (${nf0.format(marge/pv*100)} %)</b>`):''}
+      ${cmd?line(`Pour ${N(cmd)} sacs`, `${nf1.format(cmd*r.kgMille/1000)} kg de papier · ${nf1.format(cmd*r.gL/1000)} kg colle latérale · ${nf1.format(cmd*r.gF/1000)} kg colle de fond`, 't'):''}
+      ${cmd?line('Coût total de la quantité', `<b>${F(cmd*c.total)}</b>${pv?` · vente ${F(cmd*pv)} · marge ${F(cmd*marge)}`:''}`):''}
+    </div>
+    <div class="sheetbar" style="padding:14px 0 0;border:0;background:none"><button class="btn primary" data-act="cx-save">${ico('plus')}Enregistrer cette estimation</button><button class="btn" data-act="cx-new">Nouveau calcul</button></div></div>`;
 }
 function onCalcInput(e){
   const t = e.target;
-  if (t.dataset.cx === 'prod') { CX.prod = t.value; const p = prod(t.value); if (p) { CX.L = num(p.largeur)||''; CX.H = num(p.longueur)||''; CX.S = num(p.cote)||0; if (num(p.grammage)) CX.g = num(p.grammage); } render(); }
+  if (t.dataset.cx === 'prod') { CX.prod = t.value; const p = prod(t.value); if (p) { CX.L = num(p.largeur)||''; CX.H = num(p.longueur)||''; CX.S = num(p.cote)||0; if (num(p.grammage)) CX.g = num(p.grammage); CX.impr = num(p.cout_impression)||''; CX.pv = num(p.prix_vente)||''; } render(); }
+  else if (t.dataset.cx === 'frais') CX.frais = t.checked;
   else if (t.dataset.cx) { CX[t.dataset.cx] = t.value; if (['L','H','S','g'].includes(t.dataset.cx) && CX.prod) { CX.prod = ''; const s = $('#cx_prod'); if (s) s.value = ''; } }
-  else if (t.dataset.cm) { CXm = {...(CXm || marges()), [t.dataset.cm]: t.value === '' ? 0 : num(t.value)}; const sm = document.querySelector('.marges summary .note'); if (sm) sm.textContent = `collage ${nf1.format(CXm.collage)} cm · rabat ${nf1.format(CXm.rabat)} cm · fond ${nf2.format(CXm.coef)} × S · chutes ${nf1.format(CXm.chutes)} %`; }
+  else if (t.dataset.cm) { CXm = {...(CXm || marges()), [t.dataset.cm]: t.value === '' ? 0 : num(t.value)}; const sm = $('#cm_sum'); if (sm) sm.textContent = margesTxt(CXm); }
   try { localStorage.setItem(LS+'-calc', JSON.stringify(CX)); } catch(_){}
   const o = $('#cx_out'); if (o) o.innerHTML = calcOut();
 }
 async function margesSave(reset){
   const m = reset ? MARGES_DEF : (CXm || marges()); const body = {...config(), id:'config'}; for (const k in MARGES_DEF) body['m_'+k] = num(m[k]);
-  try { await save('parametres', body); CXm = null; toast(reset ? "Marges d'origine rétablies" : 'Marges enregistrées'); render(); } catch(e){ toast("Échec de l'enregistrement"); }
+  try { await save('parametres', body); CXm = null; toast(reset ? "Valeurs d'origine rétablies" : 'Valeurs enregistrées'); render(); } catch(e){ toast("Échec de l'enregistrement"); }
+}
+function cxSave(){
+  const m = CXm || marges(); const r = calcSac({...CX, m}); if (!r) return toast("Saisissez d'abord la largeur, la hauteur et le grammage");
+  const c = coutSac(CX, r); const p = prod(CX.prod);
+  const nom = `${p ? p.nom : 'Sac'} ${nf1.format(num(CX.L))}×${nf1.format(num(CX.H))}${num(CX.S)?'×'+nf1.format(num(CX.S)):''} · ${N(CX.g)} g${num(CX.cmd)?' · '+N(num(CX.cmd))+' sacs':''}`;
+  openForm('estimations', null, {type:'PRV', reference:nextRef('PRV'), nom, quantite: num(CX.cmd)||'', produit: CX.prod||'',
+    cx:{...CX}, m:{...m}, res:{poids:+r.poids.toFixed(2), net:Math.floor(r.net), gL:+r.gL.toFixed(3), gF:+r.gF.toFixed(3), colle:+c.colle.toFixed(3), papier:+c.papier.toFixed(3), total:+c.total.toFixed(3)}});
+}
+function cxLoad(id){
+  const e = S.estimations.find(x => x.id === id); if (!e || !e.cx) return;
+  CX = {...CX_DEF, ...e.cx}; const base = marges(); CXm = e.m && Object.keys(MARGES_DEF).some(k => num(e.m[k]) !== num(base[k])) ? {...base, ...e.m} : null;
+  try { localStorage.setItem(LS+'-calc', JSON.stringify(CX)); } catch(_){}
+  tab = 'calcul'; try { history.replaceState(null,'','#calcul'); } catch(_){} render(); scrollTo({top:0, behavior:'smooth'}); toast(`${e.reference} chargée dans la calculatrice`);
 }
 
 // ---------- Navigation ----------
@@ -959,7 +1040,7 @@ function stopDemo(){ COLS.forEach(c => S[c] = realS[c]); realS = null; demo = fa
 let filtreCol = {};
 function table(col, rows){
   const sc = SCHEMAS[col];
-  if (!rows.length) return `<div class="tw"><div class="empty">${q[col]?`<b>Aucun résultat</b>Rien ne correspond à « ${esc(q[col])} ».`:`<b>Rien pour l'instant</b>Cliquez sur « Ajouter » pour saisir ${col==='clients'?'votre premier client':'la première ligne'}.`}</div></div>`;
+  if (!rows.length) return `<div class="tw"><div class="empty">${q[col]?`<b>Aucun résultat</b>Rien ne correspond à « ${esc(q[col])} ».`:(col==='estimations' ? `<b>Aucune estimation enregistrée</b>Faites un calcul puis cliquez sur « Enregistrer cette estimation ».` : `<b>Rien pour l'instant</b>Cliquez sur « Ajouter » pour saisir ${col==='clients'?'votre premier client':'la première ligne'}.`)}</div></div>`;
   const cell = (c, r) => { const [k,,fmt,cls] = c; const raw = typeof k === 'function' ? k(r) : r[k]; if (cls==='html') return raw; return fmt ? (raw===''||raw==null ? '' : fmt(cls==='num'?num(raw):raw)) : esc(raw); };
   let foot = '';
   if (sc.sum) {
@@ -1083,7 +1164,7 @@ function openForm(col, id, preset){
   const sc = SCHEMAS[col]; const rec = id ? {...S[col].find(r=>r.id===id)} : {};
   if (!id) sc.fields.forEach(f => { if (f.def !== undefined) rec[f.k] = typeof f.def === 'function' ? f.def() : f.def; });
   Object.assign(rec, preset||{});
-  form = {col, id, v:rec, manual:new Set(id?['kraft_kg','colle_kg','prix_unitaire'].concat(num(rec.g_papier)?['g_papier']:[]):[])};
+  form = {col, id, v:rec, manual:new Set(id?['kraft_kg','colle_kg','prix_unitaire'].concat(num(rec.g_papier)?['g_papier']:[], num(rec.g_colle)?['g_colle']:[]):[])};
   drawForm();
 }
 function fieldHtml(f, v){
@@ -1122,7 +1203,7 @@ function onFormInput(e){
   const k = e.target.dataset.k; if (!k || !form) return;
   if (e.target.value === '__new') { e.target.value=''; openSub(); return; }
   form.v[k] = e.target.value;
-  if (['kraft_kg','colle_kg','prix_unitaire','g_papier'].includes(k)) form.manual.add(k);
+  if (['kraft_kg','colle_kg','prix_unitaire','g_papier','g_colle'].includes(k)) form.manual.add(k);
   const sc = SCHEMAS[form.col];
   if (sc.auto) { const up = sc.auto(form.v, k); Object.entries(up).forEach(([kk,vv]) => { if (form.manual.has(kk) && k!=='produit') return; form.v[kk] = vv; const el = document.getElementById('f_'+kk); if (el) el.value = vv; }); }
   if (k==='devise') { const t = document.getElementById('f_taux'); if (t) t.closest('.field').hidden = e.target.value==='FCFA'; }
@@ -1224,6 +1305,9 @@ document.addEventListener('click', async e => {
   if (d.act==='export') return exportJSON();
   if (d.act==='marges-save') return margesSave();
   if (d.act==='marges-reset') return margesSave(true);
+  if (d.act==='cx-save') return cxSave();
+  if (d.act==='cx-load') return cxLoad(d.id);
+  if (d.act==='cx-new') { CX = {...CX_DEF}; CXm = null; try { localStorage.removeItem(LS+'-calc'); } catch(_){} render(); return; }
   if (d.act==='logout') { if (demo) stopDemo(); return sb.auth.signOut(); }
   if (d.act==='auth') return showAuth(d.k);
   if (d.act==='recheck') return user && enter(user);

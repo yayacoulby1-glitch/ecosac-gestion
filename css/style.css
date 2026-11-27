@@ -319,3 +319,9 @@ body.locked{overflow:hidden}
 .marges summary .note{font-weight:400;font-size:12.5px}
 .marges .sheetbar{padding:14px 0 6px;border:0;background:none}
 @media (max-width:480px){.cx-kpis{grid-template-columns:1fr}}
+.fields.flat.three{grid-template-columns:repeat(3,minmax(0,1fr))}
+@media (max-width:560px){.fields.flat.three{grid-template-columns:1fr 1fr}}
+.subh{margin-top:16px;font-size:13px;font-weight:600;color:var(--fg2)}
+label.check{display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:26px}
+label.check input{width:18px;height:18px;accent-color:var(--accent);margin:0}
+.good-t{color:var(--good,#2f7a47)} .bad-t{color:var(--bad)}
