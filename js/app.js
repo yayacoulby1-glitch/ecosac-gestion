@@ -23,6 +23,11 @@ function estimePapier(v){
   const r = calcSac({L:v.largeur, H:v.longueur, S:v.cote, g:v.grammage}); if (!r) return null;
   return {w: r.fl, h: r.fh, g: r.poids};
 }
+// Les sacs se vendent par lots de 1 000. Prix interne = prix par sac.
+// Ancienne saisie : un « prix par sac » de 1 000 FCFA ou plus est en fait un prix de lot.
+const LOT = 1000;
+const pvSac = p => !p ? 0 : num(p.prix_lot) ? num(p.prix_lot)/LOT : num(p.prix_vente) >= 1000 ? num(p.prix_vente)/LOT : num(p.prix_vente);
+const pvLot = p => pvSac(p)*LOT;
 const dims = r => num(r.longueur)&&num(r.largeur) ? `${nf1.format(num(r.longueur))} × ${nf1.format(num(r.largeur))}${num(r.cote)?' × '+nf1.format(num(r.cote)):''}` : '';
 const ARTICLES = ['Graisse','Huile','Encre','Cartons','Scotch','Sopalin','Lingettes bébé','Lingettes imprimante','Encre imprimante numérique'];
 const UNITES = ['pièce','kg','litre','bidon','carton','rouleau','paquet','boîte','pot'];
@@ -93,19 +98,21 @@ const SCHEMAS = {
       {k:'date',label:'Date',type:'date',req:1,def:today},
       {k:'client',label:'Client',type:'client',req:1},
       {k:'produit',label:'Produit',type:'product',req:1},
+      {k:'lots',label:'Nombre de lots de 1 000',type:'number',h:'Remplit le nombre de sacs'},
       {k:'quantite',label:'Nombre de sacs',type:'number',req:1},
-      {k:'prix_unitaire',label:'Prix par sac (FCFA)',type:'number',req:1,h:'Proposé depuis le catalogue, modifiable'},
+      {k:'prix_lot',label:'Prix du lot de 1 000 sacs (FCFA)',type:'number',req:1,h:'Proposé depuis le catalogue, modifiable'},
       {k:'montant_paye',label:'Montant déjà payé (FCFA)',type:'number',h:'Laisser vide si rien n\'est encore payé'},
       {k:'cliche',label:'Cliché utilisé (sacs imprimés)',type:'cliche',h:'Seulement pour les sacs avec impression personnalisée'},
       {k:'paiement',label:'Mode de paiement',type:'select',options:[['especes','Espèces'],['mobile','Mobile Money'],['virement','Virement'],['cheque','Chèque'],['credit','À crédit']],def:'especes'},
       {k:'notes',label:'Notes (n° facture, personnalisation…)',type:'textarea',full:1},
     ],
-    auto: (v, changed) => { if (changed==='client' || changed==='produit') { const p = prod(v.produit); const out = changed==='produit' && p && num(p.prix_vente) ? {prix_unitaire:num(p.prix_vente)} : {};
+    auto: (v, changed) => { if (changed==='lots') return {quantite: Math.round(num(v.lots)*LOT)}; if (changed==='quantite') return {lots: +(num(v.quantite)/LOT).toFixed(3)}; if (changed==='prix_lot') return {prix_unitaire: num(v.prix_lot)/LOT};
+      if (changed==='client' || changed==='produit') { const p = prod(v.produit); const out = changed==='produit' && p && pvSac(p) ? {prix_lot:pvLot(p), prix_unitaire:pvSac(p)} : {};
       if (!v.cliche && v.client) { const c = S.cliches.find(c => c.client===v.client && c.statut!=='archive' && (!c.produit || c.produit===v.produit)); if (c && (p?.cout_impression || p?.categorie==='shopping' || !p)) out.cliche = c.id; } return out; } return {}; },
     calc: v => { const t = num(v.quantite)*num(v.prix_unitaire); const cpu = coutUnitaire(v.produit);
       return [['Montant total', F(t),'t'],['Reste à payer', F(t-num(v.montant_paye))],
-        ['Prix de revient estimé', cpu ? F2(cpu)+' / sac' : '—'],['Marge estimée', cpu ? F(t-cpu*num(v.quantite)) : '—']]; },
-    cols:[['date','Date',fdate],[r=>clientNom(r.client),'Client'],[r=>prodNom(r.produit),'Produit'],['quantite','Sacs',N,'num'],['prix_unitaire','Prix/sac',F,'num'],
+        ['Prix de revient estimé', cpu ? F(cpu*LOT)+' / lot de 1 000' : '—'],['Marge estimée', cpu ? F(t-cpu*num(v.quantite)) : '—']]; },
+    cols:[['date','Date',fdate],[r=>clientNom(r.client),'Client'],[r=>prodNom(r.produit),'Produit'],['quantite','Sacs',N,'num'],[r=>num(r.prix_unitaire)*LOT,'Prix / lot',F,'num'],
       [r=>num(r.quantite)*num(r.prix_unitaire),'Total',F,'num'],[r=>{const d=num(r.quantite)*num(r.prix_unitaire)-num(r.montant_paye);return d>0.5?`<span class="pill warn">Reste ${F(d)}</span>`:'<span class="pill good">Payé</span>'},'Paiement',null,'html']],
     sum:['Sacs','Total'],
   },
@@ -173,13 +180,13 @@ const SCHEMAS = {
       {k:'g_papier',label:'Papier par sac (grammes)',type:'number',req:1,h:'Estimé depuis les dimensions. Plus précis : pesez 10 sacs et divisez par 10'},
       {k:'g_colle',label:'Colle par sac (grammes)',type:'number'},
       {k:'cout_impression',label:'Impression par sac (FCFA)',type:'number',h:'Encre, cliché… 0 si sans impression'},
-      {k:'prix_vente',label:'Prix de vente par sac (FCFA)',type:'number'},
+      {k:'prix_lot',label:'Prix de vente du lot de 1 000 sacs (FCFA)',type:'number'},
       {k:'notes',label:'Notes (dimensions, grammage…)',type:'textarea',full:1},
     ],
     auto: (v, changed) => { if (!['longueur','largeur','cote','grammage'].includes(changed)) return {}; const e = estimePapier(v); const r = calcSac({L:v.largeur, H:v.longueur, S:v.cote, g:v.grammage}); return e ? {g_papier:+e.g.toFixed(1), g_colle:+(r.gL+r.gF).toFixed(2)} : {}; },
     calc: v => { const m = moyennes(); const e = estimePapier(v); const mat = num(v.g_papier)/1000*m.kraft + num(v.g_colle)/1000*m.colle + num(v.cout_impression);
       return [...(e?[['Feuille de papier par sac', `${nf1.format(e.w)} × ${nf1.format(e.h)} cm`],['Poids de papier estimé', nf1.format(e.g)+' g']]:[]),['Papier + colle + impression', F2(mat)],['Frais fixes par sac (moyenne)', F2(analyse(null,null).fixeParSac)],['Prix de revient estimé', F2(mat+analyse(null,null).fixeParSac),'t']]; },
-    cols:[[r=>esc(r.nom)+(r.exemple?' <span class="pill warn">exemple</span>':''),'Produit',null,'html'],[r=>CATS[r.categorie]||'','Famille'],[r=>dims(r),'Dimensions (cm)'],[r=>num(r.grammage)?nf0.format(num(r.grammage))+' g/m²':'','Grammage'],['g_papier','Papier (g)',nf1.format.bind(nf1),'num'],['g_colle','Colle (g)',nf2.format.bind(nf2),'num'],['cout_impression','Impression',F2,'num'],[r=>coutUnitaire(r.id),'Prix de revient',F2,'num'],['prix_vente','Prix de vente',F2,'num']],
+    cols:[[r=>esc(r.nom)+(r.exemple?' <span class="pill warn">exemple</span>':''),'Produit',null,'html'],[r=>CATS[r.categorie]||'','Famille'],[r=>dims(r),'Dimensions (cm)'],[r=>num(r.grammage)?nf0.format(num(r.grammage))+' g/m²':'','Grammage'],['g_papier','Papier (g)',nf1.format.bind(nf1),'num'],['g_colle','Colle (g)',nf2.format.bind(nf2),'num'],['cout_impression','Impression',F2,'num'],[r=>coutUnitaire(r.id)*LOT,'Revient / lot',F,'num'],[r=>pvLot(r),'Vente / lot',F,'num']],
   },
 };
 SCHEMAS.fournitures = {
@@ -312,9 +319,9 @@ SCHEMAS.estimations = {
     {k:'notes',label:'Notes',type:'textarea',full:1},
   ],
   auto: (v, changed) => changed==='type' && /^(PRV|DEV|SIM)-\d{4}-\d+$/.test(v.reference||'') ? {reference: nextRef(v.type)} : {},
-  calc: v => v.res ? [['Sacs par tonne', N(v.res.net)],["Papier par sac", nf1.format(v.res.poids)+' g'],['Colle par sac', nf2.format(num(v.res.gL)+num(v.res.gF))+' g · '+F2(v.res.colle)],['Coût de fabrication par sac', F2(v.res.total),'t']].concat(num(v.quantite)?[['Coût pour '+N(num(v.quantite))+' sacs', F(num(v.quantite)*num(v.res.total))]]:[]) : [],
+  calc: v => v.res ? [['Sacs par tonne', N(v.res.net)],["Papier par sac", nf1.format(v.res.poids)+' g'],['Colle par sac', nf2.format(num(v.res.gL)+num(v.res.gF))+' g · '+F2(v.res.colle)],['Coût de fabrication par sac', F2(v.res.total)],['Coût du lot de 1 000', F(num(v.res.total)*LOT),'t']].concat(num(v.res.pv)?[['Prix du lot', F(num(v.res.pv)*LOT)]]:[], num(v.res.conseille)?[['Lot conseillé', F(num(v.res.conseille)*LOT)]]:[]).concat(num(v.quantite)?[['Coût pour '+N(num(v.quantite))+' sacs', F(num(v.quantite)*num(v.res.total))]]:[]) : [],
   cols:[['date','Date',fdate],['reference','Référence'],[r=>(TYPES_EST.find(t=>t[0]===r.type)||['',''])[1],'Type'],['nom','Nom'],[r=>r.client?clientNom(r.client):'','Client'],[r=>num(r.quantite),'Quantité',v=>v?N(v):'','num'],
-    [r=>num(r.res?.net),'Sacs / tonne',v=>v?N(v):'','num'],[r=>num(r.res?.total),'Coût / sac',v=>v?F2(v):'','num'],
+    [r=>num(r.res?.net),'Sacs / tonne',v=>v?N(v):'','num'],[r=>num(r.res?.total)*LOT,'Coût / lot',v=>v?F(v):'','num'],
     [r=>r.cx?`<button class="btn small" data-act="cx-load" data-id="${esc(r.id)}">Ouvrir</button>`:'','',null,'html']],
 };
 const COLS = Object.keys(SCHEMAS).concat(['parametres']);
@@ -650,21 +657,22 @@ function coutSac(x, r){
 }
 function fraisSac(){ const [a,b] = (()=>{ const d = new Date(); const e = d.toISOString().slice(0,10); d.setMonth(d.getMonth()-3); return [d.toISOString().slice(0,10), e]; })(); return analyse(a,b).fixeParSac; }
 // Prix de vente : saisi dans la calculatrice, sinon celui du sac choisi dans le catalogue.
-const pvDe = x => x.pv !== '' && x.pv != null ? num(x.pv) : num(prod(x.prod)?.prix_vente);
+const pvDe = x => x.pvl !== '' && x.pvl != null ? num(x.pvl)/LOT : pvSac(prod(x.prod));
 // Prix conseillé : coût ÷ (1 − marge cible), arrondi au FCFA (au 5 FCFA au-dessus de 100).
-function prixConseille(cout, cible){ if (!cout || cible >= 100) return 0; const p = cout/(1 - cible/100); return p >= 100 ? Math.ceil(p/5)*5 : Math.ceil(p); }
-function margeHtml(pv, cout){ if (!pv || !cout) return ''; const mg = pv - cout, pc = mg/pv*100;
-  return `<b class="${mg>=0?'good-t':'bad-t'}">${mg>=0?'Bénéfice':'Perte'} ${mg>=0?'':'−'}${F2(Math.abs(mg))} (${mg>=0?'':'−'}${nf0.format(Math.abs(pc))} %)</b>`; }
+// renvoie le prix conseillé par sac, calé sur un prix de lot arrondi aux 50 FCFA au-dessus
+function prixConseille(cout, cible){ if (!cout || cible >= 100) return 0; return Math.ceil(cout*LOT/(1 - cible/100)/50)*50/LOT; }
+function margeHtml(pv, cout, fmt){ fmt = fmt || F2; if (!pv || !cout) return ''; const mg = pv - cout, pc = mg/pv*100;
+  return `<b class="${mg>=0?'good-t':'bad-t'}">${mg>=0?'Bénéfice':'Perte'} ${mg>=0?'':'−'}${fmt(Math.abs(mg))} (${mg>=0?'':'−'}${nf0.format(Math.abs(pc))} %)</b>`; }
 const TYPES_EST = [['PRV','Prévisionnel'],['DEV','Devis client'],['SIM','Simulation']];
 function nextRef(type){
   const d = new Date(), p = `${type}-${String(d.getFullYear()).slice(2)}${String(d.getMonth()+1).padStart(2,'0')}-`;
   const n = S.estimations.filter(e => String(e.reference||'').startsWith(p)).map(e => +String(e.reference).slice(p.length)||0);
   return p + String((n.length ? Math.max(...n) : 0) + 1).padStart(2,'0');
 }
-const CX_DEF = {prod:'', L:'', H:'', S:'', g:80, bob:'', cmd:'', pk:'', impr:'', pv:'', frais:false};
+const CX_DEF = {prod:'', L:'', H:'', S:'', g:80, bob:'', cmd:'', pk:'', impr:'', pvl:'', frais:false};
 let CX = {...CX_DEF}, CXm = null, CXopen = false;
 document.addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('marges')) CXopen = e.target.open; }, true);
-try { const s = JSON.parse(localStorage.getItem(LS+'-calc')||'null'); if (s) CX = {...CX, ...s}; } catch(e){}
+try { const s = JSON.parse(localStorage.getItem(LS+'-calc')||'null'); if (s) { delete s.pv; CX = {...CX, ...s}; } } catch(e){}
 function vCalcul(){
   const m = CXm || marges(); const mk = moyennes().kraft;
   const opts = S.produits.filter(p=>num(p.largeur)&&num(p.longueur)).map(p=>`<option value="${esc(p.id)}" ${CX.prod===p.id?'selected':''}>${esc(p.nom)} · ${dims(p)}</option>`).join('');
@@ -684,7 +692,7 @@ function vCalcul(){
       <div class="fields flat">
         ${inp('pk','Prix du papier (FCFA/kg)', mk ? `Vide = moyenne de vos conteneurs (${F(mk)}/kg)` : 'Ou saisissez vos conteneurs dans Achats', mk ? Math.round(mk) : '')}
         ${inp('impr','Impression par sac (FCFA)','Encre, cliché… 0 si sans impression')}
-        ${inp('pv','Prix de vente par sac (FCFA)', prod(CX.prod)&&num(prod(CX.prod).prix_vente) ? `Vide = prix du catalogue (${F2(num(prod(CX.prod).prix_vente))})` : 'Facultatif, pour voir la marge', prod(CX.prod)&&num(prod(CX.prod).prix_vente) ? num(prod(CX.prod).prix_vente) : '')}
+        ${inp('pvl','Prix de vente du lot de 1 000 (FCFA)', pvSac(prod(CX.prod)) ? `Vide = prix du catalogue (${F(pvLot(prod(CX.prod)))})` : 'Facultatif, pour voir la marge', pvSac(prod(CX.prod)) ? pvLot(prod(CX.prod)) : '')}
         <div class="field"><label class="check"><input type="checkbox" data-cx="frais" ${CX.frais?'checked':''}> Ajouter les frais généraux</label><small class="h">Personnel, électricité, fournitures… par sac, moyenne des 3 derniers mois</small></div>
       </div>
       <details class="marges" ${CXm||CXopen?'open':''}><summary>Marges et colle <span class="note" id="cm_sum">${margesTxt(m)}</span></summary>
@@ -701,8 +709,8 @@ function vCalcul(){
   </div>
   <div class="head" style="margin:32px 0 14px"><div><h3 style="margin:0">Estimations enregistrées</h3><p class="lead">Référence : <b>PRV</b> prévisionnel (production prévue), <b>DEV</b> devis client, <b>SIM</b> simulation (nouveau format, essai), puis l'année et le mois, puis un numéro. Exemple : PRV-${String(new Date().getFullYear()).slice(2)}${String(new Date().getMonth()+1).padStart(2,'0')}-01.</p></div></div>
   ${listBlock('estimations')}
-  ${rows.length?`<h3 style="margin:28px 0 4px">Votre catalogue</h3><p class="note" style="margin:0 0 12px">Coût avec le prix du papier${CX.frais?', les frais généraux':''} et l'impression de chaque sac. Prix conseillé pour ${nf0.format(m.cible)} % de marge.</p><div class="tw"><table><thead><tr><th>Sac</th><th>Format</th><th class="num">Papier + colle</th><th class="num">Sacs / tonne</th><th class="num">Coût / sac</th><th class="num">Prix de vente</th><th class="num">Résultat / sac</th><th class="num">Prix conseillé</th></tr></thead><tbody>
-    ${rows.map(({p,r,c})=>`<tr><td style="white-space:normal;min-width:140px">${esc(p.nom)}</td><td style="white-space:nowrap">${dims(p)} · ${N(p.grammage)} g</td><td class="num" style="white-space:nowrap">${nf1.format(r.poids)} + ${nf1.format(r.gL+r.gF)} g</td><td class="num"><b>${N(Math.floor(r.net))}</b></td><td class="num">${c.pk?F2(c.total):'—'}</td><td class="num">${num(p.prix_vente)?F2(num(p.prix_vente)):'—'}</td><td class="num" style="white-space:nowrap">${c.pk?margeHtml(num(p.prix_vente), c.total).replace(/Bénéfice |Perte /,''):''}</td><td class="num">${c.pk?F2(prixConseille(c.total, num(m.cible))):'—'}</td></tr>`).join('')}
+  ${rows.length?`<h3 style="margin:28px 0 4px">Votre catalogue</h3><p class="note" style="margin:0 0 12px">Coût avec le prix du papier${CX.frais?', les frais généraux':''} et l'impression de chaque sac. Prix par lot de 1 000 sacs. Lot conseillé pour ${nf0.format(m.cible)} % de marge.</p><div class="tw"><table><thead><tr><th>Sac</th><th>Format</th><th class="num">Papier + colle</th><th class="num">Sacs / tonne</th><th class="num">Coût / lot</th><th class="num">Prix / lot</th><th class="num">Résultat / lot</th><th class="num">Lot conseillé</th></tr></thead><tbody>
+    ${rows.map(({p,r,c})=>`<tr><td style="white-space:normal;min-width:140px">${esc(p.nom)}</td><td style="white-space:nowrap">${dims(p)} · ${N(p.grammage)} g</td><td class="num" style="white-space:nowrap">${nf1.format(r.poids)} + ${nf1.format(r.gL+r.gF)} g</td><td class="num"><b>${N(Math.floor(r.net))}</b></td><td class="num">${c.pk?F(c.total*LOT):'—'}</td><td class="num">${pvSac(p)?F(pvLot(p)):'—'}</td><td class="num" style="white-space:nowrap">${c.pk?margeHtml(pvLot(p), c.total*LOT, F).replace(/Bénéfice |Perte /,''):''}</td><td class="num">${c.pk?F(prixConseille(c.total, num(m.cible))*LOT):'—'}</td></tr>`).join('')}
   </tbody></table></div>`:''}`;
 }
 const margesTxt = m => `marge cible ${nf0.format(m.cible)} % · collage ${nf1.format(m.collage)} cm · rabat ${nf1.format(m.rabat)} cm · fond ${nf2.format(m.coef)} × S · chutes ${nf1.format(m.chutes)} % · colle ${nf1.format(m.gl)} et ${nf1.format(m.gf)} g/m`;
@@ -714,9 +722,9 @@ function calcOut(){
   const marge = pv ? pv - c.total : null, ok = !!c.pk;
   return `<div class="grid kpis cx-kpis">
       ${kpi('Sacs par tonne', N(Math.floor(r.net)), `après ${nf1.format(m.chutes)} % de chutes · ${N(Math.floor(r.brut))} sans chutes`, 'hero')}
-      ${kpi('Coût de fabrication', ok ? F2(c.total) : '—', ok ? "par sac" : 'Indiquez le prix du papier')}
-      ${kpi(marge!==null && ok ? (marge>=0?'Bénéfice par sac':'Perte par sac') : 'Marge par sac', marge!==null && ok ? `<span class="${marge>=0?'good-t':'bad-t'}">${marge>=0?'':'−'}${F2(Math.abs(marge))}</span>` : '—', marge!==null && ok ? `${nf0.format(marge/pv*100)} % du prix de vente (${F2(pv)})${CX.pv===''||CX.pv==null?' · prix du catalogue':''}` : 'Choisissez un sac du catalogue ou saisissez un prix de vente', marge!==null && ok && marge<0 ? 'loss' : '')}
-      ${kpi('Prix de vente conseillé', pc ? F2(pc) : '—', pc ? `pour ${nf0.format(m.cible)} % de marge${pv?` · ${pc>pv?'+'+F2(pc-pv)+' par rapport à votre prix':pc<pv?'votre prix est au-dessus':'votre prix est juste'}`:''}` : 'Indiquez le prix du papier')}
+      ${kpi('Coût du lot de 1 000', ok ? F(c.total*LOT) : '—', ok ? `soit ${F2(c.total)} par sac` : 'Indiquez le prix du papier')}
+      ${kpi(marge!==null && ok ? (marge>=0?'Bénéfice par lot':'Perte par lot') : 'Marge par lot', marge!==null && ok ? `<span class="${marge>=0?'good-t':'bad-t'}">${marge>=0?'':'−'}${F(Math.abs(marge*LOT))}</span>` : '—', marge!==null && ok ? `${nf0.format(marge/pv*100)} % du prix du lot (${F(pv*LOT)})${CX.pvl===''||CX.pvl==null?' · catalogue':''} · ${marge>=0?'':'−'}${F2(Math.abs(marge))} par sac` : 'Choisissez un sac du catalogue ou saisissez un prix de lot', marge!==null && ok && marge<0 ? 'loss' : '')}
+      ${kpi('Prix du lot conseillé', pc ? F(pc*LOT) : '—', pc ? `pour ${nf0.format(m.cible)} % de marge · ${F2(pc)} par sac${pv?` · ${pc>pv?'+'+F(Math.round((pc-pv)*LOT))+' par rapport à votre prix':pc<pv?'votre prix est au-dessus':'votre prix est juste'}`:''}` : 'Indiquez le prix du papier')}
     </div>
     <div class="panel" style="margin-top:16px"><h3>Papier</h3><div class="calc cx-detail">
       ${line('Largeur de feuille', `2 × ${nf1.format(num(CX.L))} + 2 × ${nf1.format(num(CX.S))} + ${nf1.format(m.collage)} = <b>${nf1.format(r.fl)} cm</b>`)}
@@ -742,9 +750,11 @@ function calcOut(){
       ${c.impr?line('Impression', F2(c.impr)):''}
       ${CX.frais?line('Frais généraux', c.frais ? F2(c.frais) : '<span class="note">pas encore de production saisie</span>'):''}
       ${line('Total par sac', F2(c.total), 't')}
-      ${pv?line('Prix de vente'+(CX.pv===''||CX.pv==null?' (catalogue)':''), F2(pv)):''}
+      ${line('Coût du lot de 1 000 sacs', `<b>${F(c.total*LOT)}</b>`)}
+      ${pv?line('Prix du lot'+(CX.pvl===''||CX.pvl==null?' (catalogue)':''), `${F(pv*LOT)} <span class="note">(${F2(pv)} par sac)</span>`, 't'):''}
+      ${pv&&ok?line('Résultat par lot', margeHtml(pv*LOT, c.total*LOT, F)):''}
       ${pv&&ok?line('Résultat par sac', margeHtml(pv, c.total)):''}
-      ${pc?line(`Prix conseillé (marge ${nf0.format(m.cible)} %)`, `${F2(c.total)} ÷ (1 − ${nf0.format(m.cible)} %) ≈ <b>${F2(pc)}</b>`):''}
+      ${pc?line(`Prix du lot conseillé (marge ${nf0.format(m.cible)} %)`, `${F(c.total*LOT)} ÷ (1 − ${nf0.format(m.cible)} %) ≈ <b>${F(pc*LOT)}</b>`):''}
       ${cmd?line(`Pour ${N(cmd)} sacs`, `${nf1.format(cmd*r.kgMille/1000)} kg de papier · ${nf1.format(cmd*r.gL/1000)} kg colle latérale · ${nf1.format(cmd*r.gF/1000)} kg colle de fond`, 't'):''}
       ${cmd?line('Coût total de la quantité', `<b>${F(cmd*c.total)}</b>${pv?` · vente ${F(cmd*pv)} · ${marge>=0?'bénéfice':'perte'} ${F(Math.abs(cmd*marge))}`:''}`):''}
     </div>
@@ -752,7 +762,7 @@ function calcOut(){
 }
 function onCalcInput(e){
   const t = e.target;
-  if (t.dataset.cx === 'prod') { CX.prod = t.value; const p = prod(t.value); if (p) { CX.L = num(p.largeur)||''; CX.H = num(p.longueur)||''; CX.S = num(p.cote)||0; if (num(p.grammage)) CX.g = num(p.grammage); CX.impr = num(p.cout_impression)||''; } CX.pv = ''; render(); }
+  if (t.dataset.cx === 'prod') { CX.prod = t.value; const p = prod(t.value); if (p) { CX.L = num(p.largeur)||''; CX.H = num(p.longueur)||''; CX.S = num(p.cote)||0; if (num(p.grammage)) CX.g = num(p.grammage); CX.impr = num(p.cout_impression)||''; } CX.pvl = ''; render(); }
   else if (t.dataset.cx === 'frais') CX.frais = t.checked;
   else if (t.dataset.cx) { CX[t.dataset.cx] = t.value; if (['L','H','S','g'].includes(t.dataset.cx) && CX.prod) { CX.prod = ''; const s = $('#cx_prod'); if (s) s.value = ''; } }
   else if (t.dataset.cm) { CXm = {...(CXm || marges()), [t.dataset.cm]: t.value === '' ? 0 : num(t.value)}; const sm = $('#cm_sum'); if (sm) sm.textContent = margesTxt(CXm); }
@@ -885,11 +895,11 @@ function vTableau(){
   if (alertK && st.kraft < alertK) alerts.push(`Stock de papier kraft bas : ${K(st.kraft)} (seuil ${K(alertK)}). Pensez à commander un conteneur.`);
   if (alertC && st.colle < alertC) alerts.push(`Stock de colle bas : ${K(st.colle)} (seuil ${K(alertC)}).`);
   if (st.kraft < -0.5) alerts.push(`Le stock de papier est négatif (${K(st.kraft)}) : un conteneur n'a peut-être pas été saisi.`);
-  const sansPrix = S.produits.filter(p => !num(p.prix_vente)).length;
+  const sansPrix = S.produits.filter(p => !pvSac(p)).length;
   if (sansPrix) alerts.push(`${sansPrix} produit(s) sans prix de vente. Complétez-les dans « Produits &amp; prix ».`);
   const rows = sortedProds().map(p => {
     const d = A.P[p.id] || {q:0,vq:0,ca:0}; const c = detailCout(p.id, A);
-    const pv = d.vq ? d.ca/d.vq : num(p.prix_vente); const mu = pv - c.total; const mp = pv ? mu/pv*100 : 0;
+    const pv = d.vq ? d.ca/d.vq : pvSac(p); const mu = pv - c.total; const mp = pv ? mu/pv*100 : 0;
     return {p,d,c,pv,mu,mp};
   });
   const mx = Math.max(1, ...rows.map(r=>r.d.vq));
@@ -1173,6 +1183,8 @@ function openForm(col, id, preset){
   const sc = SCHEMAS[col]; const rec = id ? {...S[col].find(r=>r.id===id)} : {};
   if (!id) sc.fields.forEach(f => { if (f.def !== undefined) rec[f.k] = typeof f.def === 'function' ? f.def() : f.def; });
   Object.assign(rec, preset||{});
+  if (col==='produits' && !num(rec.prix_lot) && pvSac(rec)) rec.prix_lot = pvLot(rec);
+  if (col==='ventes') { if (rec.prix_lot === undefined && num(rec.prix_unitaire)) rec.prix_lot = +(num(rec.prix_unitaire)*LOT).toFixed(2); if (rec.lots === undefined && num(rec.quantite)) rec.lots = +(num(rec.quantite)/LOT).toFixed(3); }
   form = {col, id, v:rec, manual:new Set(id?['kraft_kg','colle_kg','prix_unitaire'].concat(num(rec.g_papier)?['g_papier']:[], num(rec.g_colle)?['g_colle']:[]):[])};
   drawForm();
 }
@@ -1230,6 +1242,8 @@ async function submit(){
   const rec = {...form.v}; sc.fields.forEach(f => { if (f.type==='number' && rec[f.k]!==undefined && rec[f.k]!=='') rec[f.k] = num(rec[f.k]); });
   if (form.id) rec.id = form.id;
   if (form.col==='produits' && form.id) delete rec.exemple;
+  if (form.col==='produits') rec.prix_vente = num(rec.prix_lot)/LOT;
+  if (form.col==='ventes') rec.prix_unitaire = num(rec.prix_lot)/LOT;
   try {
     const nid = await save(form.col, rec);
     toast('Enregistré');
