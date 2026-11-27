@@ -18,12 +18,10 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8
 const MOIS = ['janv.','févr.','mars','avr.','mai','juin','juil.','août','sept.','oct.','nov.','déc.'];
 
 // ---------- Schémas ----------
-// Feuille nécessaire : largeur déroulée = 2 × (largeur + côté) + 2 cm de collage ; hauteur = longueur + fond (côté × 0,75, ou 3 cm pour un sac plat)
+// Feuille nécessaire : voir calcSac (calculatrice papier) et les marges réglables.
 function estimePapier(v){
-  const L = num(v.longueur), l = num(v.largeur), c = num(v.cote), g = num(v.grammage);
-  if (!L || !l || !g) return null;
-  const w = 2*(l+c) + 2, h = L + (c ? c*0.75 + 1.5 : 3);
-  return {w, h, g: w*h/10000*g};
+  const r = calcSac({L:v.largeur, H:v.longueur, S:v.cote, g:v.grammage}); if (!r) return null;
+  return {w: r.fl, h: r.fh, g: r.poids};
 }
 const dims = r => num(r.longueur)&&num(r.largeur) ? `${nf1.format(num(r.longueur))} × ${nf1.format(num(r.largeur))}${num(r.cote)?' × '+nf1.format(num(r.cote)):''}` : '';
 const ARTICLES = ['Graisse','Huile','Encre','Cartons','Scotch','Sopalin','Lingettes bébé','Lingettes imprimante','Encre imprimante numérique'];
@@ -243,6 +241,7 @@ function bobineCalc(v){
     if (Math.abs(laize - e.w) > 1.5) alerte = `la laize (${nf1.format(laize)} cm) ne correspond pas à la feuille du sac (${nf1.format(e.w)} cm)`; }
   else if (e && gm) { sacs = Math.floor(kg*1000/e.g); }
   else if (num(p.g_papier)) { sacs = Math.floor(kg*1000/num(p.g_papier)); }
+  sacs = Math.floor(sacs * (1 - marges().chutes/100));
   if (!sacs) return null;
   const c = S.conteneurs.find(x => x.id === v.conteneur); const pk = c && num(c.poids_kg) ? conteneurCout(c).total/num(c.poids_kg) : moyennes().kraft;
   return {sacs, metres, coupe, alerte, cout: kg*pk};
@@ -611,8 +610,85 @@ function periode(k){
 }
 const PERIODES = [['mois','Ce mois'],['prec','Mois dernier'],['3m','3 derniers mois'],['annee','Cette année'],['tout','Depuis le début']];
 
+// ---------- Calculatrice : sacs par tonne de papier ----------
+// Feuille : largeur = 2 × largeur du sac + 2 × soufflet + collage latéral ; longueur = hauteur + coef × soufflet + rabat.
+const MARGES_DEF = {collage:3, rabat:3, coef:0.75, chutes:4};
+function marges(){ const c = config(); const r = {}; for (const k in MARGES_DEF) r[k] = c['m_'+k] !== undefined && c['m_'+k] !== '' ? num(c['m_'+k]) : MARGES_DEF[k]; return r; }
+function calcSac(x){
+  const L = num(x.L), H = num(x.H), Sf = num(x.S), g = num(x.g), m = x.m || marges();
+  if (!L || !H || !g) return null;
+  const fl = 2*L + 2*Sf + num(m.collage), fh = H + (Sf ? num(m.coef)*Sf : 0) + num(m.rabat);
+  const surf = fl*fh/10000, poids = surf*g, brut = 1e6/poids, net = brut*(1 - num(m.chutes)/100);
+  return {fl, fh, surf, poids, brut, net, kgMille: poids*1000/1000/(1 - num(m.chutes)/100)};
+}
+let CX = {prod:'', L:'', H:'', S:'', g:80, bob:'', cmd:''}, CXm = null, CXopen = false;
+document.addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('marges')) CXopen = e.target.open; }, true);
+try { const s = JSON.parse(localStorage.getItem(LS+'-calc')||'null'); if (s) CX = {...CX, ...s}; } catch(e){}
+function vCalcul(){
+  const m = CXm || marges();
+  const opts = S.produits.filter(p=>num(p.largeur)&&num(p.longueur)).map(p=>`<option value="${esc(p.id)}" ${CX.prod===p.id?'selected':''}>${esc(p.nom)} · ${dims(p)}</option>`).join('');
+  const inp = (k, l, h, step) => `<div class="field"><label for="cx_${k}">${l}</label><input id="cx_${k}" data-cx="${k}" type="number" inputmode="decimal" step="${step||'any'}" min="0" value="${esc(CX[k]??'')}">${h?`<small class="h">${h}</small>`:''}</div>`;
+  const minp = (k, l, h) => `<div class="field"><label for="cm_${k}">${l}</label><input id="cm_${k}" data-cm="${k}" type="number" inputmode="decimal" step="any" min="0" value="${esc(m[k])}">${h?`<small class="h">${h}</small>`:''}</div>`;
+  const rows = S.produits.map(p => ({p, r: calcSac({L:p.largeur, H:p.longueur, S:p.cote, g:p.grammage, m})})).filter(x=>x.r);
+  return `<div class="head"><div><h2>Calculatrice papier</h2><p class="lead">Combien de sacs sortent d'une tonne de papier kraft, selon les dimensions et le grammage. Les résultats se mettent à jour pendant la saisie.</p></div></div>
+  <div class="grid calc-grid">
+    <div class="panel"><h3>Le sac</h3>
+      <div class="fields flat">
+        <div class="field full"><label for="cx_prod">Partir d'un sac du catalogue</label><select id="cx_prod" data-cx="prod"><option value="">Saisie libre</option>${opts}</select></div>
+        ${inp('L','Largeur L (cm)','Face avant du sac')}${inp('H','Hauteur H (cm)')}
+        ${inp('S','Soufflet S (cm)','0 pour un sac plat')}${inp('g','Grammage (g/m²)')}
+        ${inp('bob','Poids d\'une bobine (kg)','Facultatif')}${inp('cmd','Commande à produire (sacs)','Facultatif')}
+      </div>
+      <details class="marges" ${CXm||CXopen?'open':''}><summary>Marges de fabrication <span class="note">collage ${nf1.format(m.collage)} cm · rabat ${nf1.format(m.rabat)} cm · fond ${nf2.format(m.coef)} × S · chutes ${nf1.format(m.chutes)} %</span></summary>
+        <div class="fields flat">${minp('collage','Collage latéral (cm)','Ajouté à la largeur de la feuille')}${minp('rabat','Rabat (cm)','Ajouté à la longueur de la feuille')}${minp('coef','Coefficient du fond','Part du soufflet repliée au fond (0,75)')}${minp('chutes','Taux de chutes (%)','Papier perdu : réglages, ratés, fins de bobine')}</div>
+        <div class="sheetbar"><button class="btn" data-act="marges-save">Enregistrer comme marges par défaut</button><button class="btn" data-act="marges-reset">Valeurs d'origine</button></div>
+        <p class="note">Les marges enregistrées servent aussi au calcul des bobines et des produits.</p>
+      </details>
+    </div>
+    <div id="cx_out">${calcOut()}</div>
+  </div>
+  ${rows.length?`<h3 style="margin:28px 0 12px">Votre catalogue</h3><div class="tw"><table><thead><tr><th>Sac</th><th>Dimensions</th><th class="num">Grammage</th><th class="num">Feuille (cm)</th><th class="num">Poids d'un sac</th><th class="num">Sacs par tonne</th></tr></thead><tbody>
+    ${rows.map(({p,r})=>`<tr><td>${esc(p.nom)}</td><td>${dims(p)}</td><td class="num">${N(p.grammage)} g/m²</td><td class="num">${nf1.format(r.fl)} × ${nf1.format(r.fh)}</td><td class="num">${nf1.format(r.poids)} g</td><td class="num"><b>${N(Math.floor(r.net))}</b></td></tr>`).join('')}
+  </tbody></table></div>`:''}`;
+}
+function calcOut(){
+  const m = CXm || marges(); const r = calcSac({...CX, m});
+  if (!r) return `<div class="panel"><div class="empty"><b>Saisissez la largeur, la hauteur et le grammage</b>ou choisissez un sac du catalogue.</div></div>`;
+  const pk = moyennes().kraft, bob = num(CX.bob), cmd = num(CX.cmd);
+  const line = (l, v, cls) => `<div class="${cls||''}"><span>${l}</span><span>${v}</span></div>`;
+  return `<div class="grid kpis cx-kpis">
+      ${kpi('Sacs par tonne', N(Math.floor(r.net)), `après ${nf1.format(m.chutes)} % de chutes · ${N(Math.floor(r.brut))} sans chutes`, 'hero')}
+      ${kpi("Poids d'un sac", nf1.format(r.poids)+' g', `${nf2.format(r.surf)} m² de papier`)}
+    </div>
+    <div class="panel" style="margin-top:16px"><h3>Détail du calcul</h3><div class="calc cx-detail">
+      ${line('Largeur de feuille', `2 × ${nf1.format(num(CX.L))} + 2 × ${nf1.format(num(CX.S))} + ${nf1.format(m.collage)} = <b>${nf1.format(r.fl)} cm</b>`)}
+      ${line('Longueur de feuille', `${nf1.format(num(CX.H))} + ${nf2.format(m.coef)} × ${nf1.format(num(CX.S))} + ${nf1.format(m.rabat)} = <b>${nf1.format(r.fh)} cm</b>`)}
+      ${line('Surface', `${nf1.format(r.fl)} × ${nf1.format(r.fh)} ÷ 10 000 = ${nf2.format(r.surf)} m²`)}
+      ${line("Poids d'un sac", `${nf2.format(r.surf)} × ${N(CX.g)} g/m² = ${nf1.format(r.poids)} g`)}
+      ${line('Sacs par tonne', `1 000 000 ÷ ${nf1.format(r.poids)} = ${N(Math.floor(r.brut))}`)}
+      ${line(`Moins ${nf1.format(m.chutes)} % de chutes`, N(Math.floor(r.net)), 't')}
+      ${line('Papier pour 1 000 sacs', nf1.format(r.kgMille)+' kg')}
+      ${pk?line('Coût du papier par sac', F(r.kgMille/1000*pk)+` <span class="note">(kraft à ${F(pk)}/kg)</span>`):''}
+      ${bob?line(`Sacs par bobine de ${N(bob)} kg`, N(Math.floor(r.net*bob/1000)), 't'):''}
+      ${bob?line('Laize conseillée', nf1.format(r.fl)+' cm'):''}
+      ${cmd?line(`Papier pour ${N(cmd)} sacs`, nf1.format(cmd*r.kgMille/1000)+' kg'+(pk?' · '+F(cmd*r.kgMille/1000*pk):''), 't'):''}
+    </div></div>`;
+}
+function onCalcInput(e){
+  const t = e.target;
+  if (t.dataset.cx === 'prod') { CX.prod = t.value; const p = prod(t.value); if (p) { CX.L = num(p.largeur)||''; CX.H = num(p.longueur)||''; CX.S = num(p.cote)||0; if (num(p.grammage)) CX.g = num(p.grammage); } render(); }
+  else if (t.dataset.cx) { CX[t.dataset.cx] = t.value; if (['L','H','S','g'].includes(t.dataset.cx) && CX.prod) { CX.prod = ''; const s = $('#cx_prod'); if (s) s.value = ''; } }
+  else if (t.dataset.cm) { CXm = {...(CXm || marges()), [t.dataset.cm]: t.value === '' ? 0 : num(t.value)}; const sm = document.querySelector('.marges summary .note'); if (sm) sm.textContent = `collage ${nf1.format(CXm.collage)} cm · rabat ${nf1.format(CXm.rabat)} cm · fond ${nf2.format(CXm.coef)} × S · chutes ${nf1.format(CXm.chutes)} %`; }
+  try { localStorage.setItem(LS+'-calc', JSON.stringify(CX)); } catch(_){}
+  const o = $('#cx_out'); if (o) o.innerHTML = calcOut();
+}
+async function margesSave(reset){
+  const m = reset ? MARGES_DEF : (CXm || marges()); const body = {...config(), id:'config'}; for (const k in MARGES_DEF) body['m_'+k] = num(m[k]);
+  try { await save('parametres', body); CXm = null; toast(reset ? "Marges d'origine rétablies" : 'Marges enregistrées'); render(); } catch(e){ toast("Échec de l'enregistrement"); }
+}
+
 // ---------- Navigation ----------
-const TABS = [['tableau','Tableau de bord'],['achats','Achats matière'],['production','Production'],['ventes','Ventes'],['clients','Clients'],['charges','Charges'],['stock','Stock'],['produits','Produits & prix']];
+const TABS = [['tableau','Tableau de bord'],['achats','Achats matière'],['production','Production'],['ventes','Ventes'],['clients','Clients'],['charges','Charges'],['stock','Stock'],['calcul','Calculatrice papier'],['produits','Produits & prix']];
 let tab = 'tableau', per = 'mois', sub = {achats:'conteneurs', charges:'personnel', production:'productions'};
 try { const t = (location.hash||'').slice(1); if (TABS.some(x=>x[0]===t)) tab = t; const p = localStorage.getItem(LS+'-per'); if (p) per = p; } catch(e){}
 const IC = {
@@ -630,15 +706,16 @@ const IC = {
   trash:'<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>', roll:'<ellipse cx="7" cy="12" rx="4" ry="8"/><path d="M7 4h10c2.2 0 4 3.6 4 8s-1.8 8-4 8H7"/><circle cx="7" cy="12" r="1.5"/>',
   drop:'<path d="M12 3s6 7 6 11a6 6 0 0 1-12 0c0-4 6-11 6-11z"/>', bolt:'<path d="M13 2L4 14h7l-1 8 9-12h-7z"/>', print:'<path d="M6 9V3h12v6"/><rect x="3" y="9" width="18" height="8" rx="2"/><path d="M6 14h12v7H6z"/>',
   stamp:'<path d="M9 3h6l-1 8h-4z"/><path d="M4 15h16v3H4zM6 21h12"/>', person:'<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>', more:'<circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>',
+  calc:'<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8 7h8M8 11h1M12 11h0M15.5 11h.5M8 14.5h1M12 14.5h0M15.5 14.5v3M8 18h1M12 18h0"/>',
   box:'<path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4M12 11v10"/>', out:'<path d="M14 4h6v16h-6"/><path d="M3 12h11M7 8l-4 4 4 4"/>'
 };
 const ico = (n, cls) => `<svg class="${cls||'ico'}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${IC[n]||''}</svg>`;
 function paintIcons(root){ (root||document).querySelectorAll('[data-ic]').forEach(el => { if (!el.querySelector('svg')) el.insertAdjacentHTML('afterbegin', ico(el.dataset.ic, el.classList.contains('logo')?'':'ico')); }); }
-const NAV = [['Pilotage',[['tableau','Tableau de bord','grid']]],['Activité',[['production','Production','factory'],['ventes','Ventes','cart'],['clients','Clients','users']]],['Matière & stock',[['achats','Achats matière','truck'],['stock','Stock','boxes']]],['Gestion',[['charges','Charges','wallet'],['produits','Produits & prix','tag']]]];
+const NAV = [['Pilotage',[['tableau','Tableau de bord','grid']]],['Activité',[['production','Production','factory'],['ventes','Ventes','cart'],['clients','Clients','users']]],['Matière & stock',[['achats','Achats matière','truck'],['stock','Stock','boxes'],['calcul','Calculatrice papier','calc']]],['Gestion',[['charges','Charges','wallet'],['produits','Produits & prix','tag']]]];
 function drawTabs(){
   const du = S.ventes.filter(v => num(v.quantite)*num(v.prix_unitaire)-num(v.montant_paye) > 0.5).length;
   $('#nav').innerHTML = NAV.map(([g,items]) => `<div class="nav-group">${g}</div>${items.map(([k,l,i]) => `<a href="#${k}" data-tab="${k}" ${k===tab?'aria-current="page"':''}>${ico(i)}<span>${l}</span>${k==='clients'&&du?`<span class="cnt" title="Ventes non payées">${du}</span>`:''}</a>`).join('')}`).join('');
-  $('#bottom').innerHTML = [['tableau','Accueil','grid'],['production','Production','factory'],['ventes','Ventes','cart'],['stock','Stock','boxes']].map(([k,l,i]) => `<a href="#${k}" data-tab="${k}" ${k===tab?'aria-current="page"':''}>${ico(i)}<span>${l}</span></a>`).join('') + `<button data-act="menu" ${['achats','clients','charges','produits'].includes(tab)?'aria-current="page"':''}>${ico('menu')}<span>Plus</span></button>`;
+  $('#bottom').innerHTML = [['tableau','Accueil','grid'],['production','Production','factory'],['ventes','Ventes','cart'],['stock','Stock','boxes']].map(([k,l,i]) => `<a href="#${k}" data-tab="${k}" ${k===tab?'aria-current="page"':''}>${ico(i)}<span>${l}</span></a>`).join('') + `<button data-act="menu" ${['achats','clients','charges','produits','calcul'].includes(tab)?'aria-current="page"':''}>${ico('menu')}<span>Plus</span></button>`;
   const db = $('#demoBtn'); if (db) db.textContent = demo ? "Quitter l'exemple" : 'Voir un exemple rempli';
   const g = NAV.find(([,it])=>it.some(x=>x[0]===tab)); const cur = g && g[1].find(x=>x[0]===tab);
   $('#crumb').innerHTML = g ? `<span>${g[0]}</span><i>/</i><b>${cur[1]}</b>${demo?' <span class="pill warn">Exemple</span>':''}` : '';
@@ -672,8 +749,8 @@ function render(){
   stamp++; cache.clear(); drawTabs(); document.body.classList.remove('menu');
   const v = {tableau:vTableau, achats:vAchats, production:vProduction,
     ventes:()=>vListe('ventes','Ventes',"Chaque vente diminue le stock de sacs et alimente le chiffre d'affaires et les créances clients."),
-    clients:()=>vListe('clients','Clients','Vos clients, ce qu\'ils ont acheté et ce qu\'ils doivent encore.'), charges:vCharges, stock:vStock, produits:vProduits}[tab];
-  $('#app').innerHTML = (demo ? `<div class="banner" style="align-items:center;flex-wrap:wrap"><span style="flex:1;min-width:200px"><b>Exemple avec des chiffres inventés.</b> Rien de ce que vous modifiez ici n'est enregistré.</span><button class="btn small" data-act="stopdemo">Quitter l'exemple</button></div>` : '') + (mode==='local' && !demo ? `<div class="banner"><span>Les données sont enregistrées <b>seulement dans ce navigateur</b>. Ouvrez la plateforme depuis votre compte Claude pour les retrouver sur tous vos appareils, et faites une sauvegarde régulière dans « Produits &amp; prix ».</span></div>` : '') + v();
+    clients:()=>vListe('clients','Clients','Vos clients, ce qu\'ils ont acheté et ce qu\'ils doivent encore.'), charges:vCharges, stock:vStock, calcul:vCalcul, produits:vProduits}[tab];
+  $('#app').innerHTML = (demo ? `<div class="banner" style="align-items:center;flex-wrap:wrap"><span style="flex:1;min-width:200px"><b>Exemple avec des chiffres inventés.</b> Rien de ce que vous modifiez ici n'est enregistré.</span><button class="btn small" data-act="stopdemo">Quitter l'exemple</button></div>` : '') + (mode==='local' && !demo ? `<div class="banner"><span>Les données sont enregistrées <b>seulement dans ce navigateur</b>. Renseignez la connexion Supabase dans js/config.js pour les retrouver sur tous vos appareils, et faites une sauvegarde régulière dans « Produits &amp; prix ».</span></div>` : '') + v();
 }
 function perSelect(){
   return `<div class="seg" role="group" aria-label="Période">${PERIODES.map(([k,l])=>`<button data-per="${k}" aria-pressed="${k===per}">${l}</button>`).join('')}</div>`;
@@ -1145,6 +1222,8 @@ document.addEventListener('click', async e => {
   if (d.act==='stopdemo') return stopDemo();
   if (d.act==='seuils') return saveSeuils();
   if (d.act==='export') return exportJSON();
+  if (d.act==='marges-save') return margesSave();
+  if (d.act==='marges-reset') return margesSave(true);
   if (d.act==='logout') { if (demo) stopDemo(); return sb.auth.signOut(); }
   if (d.act==='auth') return showAuth(d.k);
   if (d.act==='recheck') return user && enter(user);
@@ -1154,10 +1233,12 @@ document.addEventListener('click', async e => {
 });
 document.addEventListener('input', e => {
   if (e.target.id==='qinput') { qFilter(e.target.value); return; }
+  if (e.target.closest && e.target.closest('.calc-grid') && e.target.tagName!=='SELECT') { onCalcInput(e); return; }
   if (e.target.dataset && e.target.dataset.q) { const c = e.target.dataset.q; q[c] = e.target.value; const rows = searched(c); $('#tbl-'+c).innerHTML = table(c, rows); $('#cnt-'+c).textContent = N(rows.length)+' ligne'+(rows.length>1?'s':''); return; }
   if (e.target.closest('#frm') && e.target.tagName!=='SELECT') onFormInput(e); });
 document.addEventListener('change', e => {
   if (e.target.closest('#frm')) { if (e.target.tagName==='SELECT') onFormInput(e); return; }
+  if (e.target.closest('.calc-grid') && e.target.tagName==='SELECT') { onCalcInput(e); return; }
   if (e.target.id==='per') { per = e.target.value; try { localStorage.setItem(LS+'-per', per); } catch(_){} render(); }
   if (e.target.dataset.filtre) { filtreCol[e.target.dataset.filtre] = e.target.value; render(); }
   if (e.target.id==='imp' && e.target.files[0]) importJSON(e.target.files[0]);
