@@ -18,7 +18,7 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8
 const MOIS = ['janv.','févr.','mars','avr.','mai','juin','juil.','août','sept.','oct.','nov.','déc.'];
 
 // ---------- Schémas ----------
-// Feuille nécessaire : voir calcSac (calculatrice papier) et les marges réglables.
+// Feuille nécessaire : voir calcSac (simulateur de coût) et les marges réglables.
 function estimePapier(v){
   const r = calcSac({L:v.largeur, H:v.longueur, S:v.cote, g:v.grammage}); if (!r) return null;
   return {w: r.fl, h: r.fh, g: r.poids};
@@ -679,7 +679,7 @@ function vCalcul(){
   const inp = (k, l, h, ph) => `<div class="field"><label for="cx_${k}">${l}</label><input id="cx_${k}" data-cx="${k}" type="number" inputmode="decimal" step="any" min="0" value="${esc(CX[k]??'')}" ${ph?`placeholder="${esc(ph)}"`:''}>${h?`<small class="h">${h}</small>`:''}</div>`;
   const minp = (k, l, h) => `<div class="field"><label for="cm_${k}">${l}</label><input id="cm_${k}" data-cm="${k}" type="number" inputmode="decimal" step="any" min="0" value="${esc(m[k])}">${h?`<small class="h">${h}</small>`:''}</div>`;
   const rows = S.produits.map(p => { const x = {L:p.largeur, H:p.longueur, S:p.cote, g:p.grammage, m, pk:CX.pk, impr:p.cout_impression, frais:CX.frais}; const r = calcSac(x); return {p, r, c: r && coutSac(x, r)}; }).filter(x=>x.r);
-  return `<div class="head"><div><h2>Calculatrice papier</h2><p class="lead">Sacs par tonne, papier et colle consommés, et coût de fabrication d'un sac. Les résultats se mettent à jour pendant la saisie. Enregistrez un calcul pour le retrouver plus tard.</p></div></div>
+  return `<div class="head"><div><h2>Simulateur de coût</h2><p class="lead">Sacs par tonne, papier et colle consommés, et coût de fabrication d'un sac. Les résultats se mettent à jour pendant la saisie. Enregistrez un calcul pour le retrouver plus tard.</p></div></div>
   <div class="grid calc-grid">
     <div class="panel"><h3>Le sac</h3>
       <div class="fields flat">
@@ -784,11 +784,11 @@ function cxLoad(id){
   const e = S.estimations.find(x => x.id === id); if (!e || !e.cx) return;
   CX = {...CX_DEF, ...e.cx}; const base = marges(); CXm = e.m && Object.keys(MARGES_DEF).some(k => num(e.m[k]) !== num(base[k])) ? {...base, ...e.m} : null;
   try { localStorage.setItem(LS+'-calc', JSON.stringify(CX)); } catch(_){}
-  tab = 'calcul'; try { history.replaceState(null,'','#calcul'); } catch(_){} render(); scrollTo({top:0, behavior:'smooth'}); toast(`${e.reference} chargée dans la calculatrice`);
+  tab = 'calcul'; try { history.replaceState(null,'','#calcul'); } catch(_){} render(); scrollTo({top:0, behavior:'smooth'}); toast(`${e.reference} chargée dans le simulateur`);
 }
 
 // ---------- Navigation ----------
-const TABS = [['tableau','Tableau de bord'],['achats','Achats matière'],['production','Production'],['ventes','Ventes'],['clients','Clients'],['charges','Charges'],['stock','Stock'],['calcul','Calculatrice papier'],['produits','Produits & prix']];
+const TABS = [['tableau','Tableau de bord'],['achats','Achats matière'],['production','Production'],['ventes','Ventes'],['clients','Clients'],['charges','Charges'],['stock','Stock'],['calcul','Simulateur de coût'],['produits','Produits & prix']];
 let tab = 'tableau', per = 'mois', sub = {achats:'conteneurs', charges:'personnel', production:'productions'};
 try { const t = (location.hash||'').slice(1); if (TABS.some(x=>x[0]===t)) tab = t; const p = localStorage.getItem(LS+'-per'); if (p) per = p; } catch(e){}
 const IC = {
@@ -811,7 +811,7 @@ const IC = {
 };
 const ico = (n, cls) => `<svg class="${cls||'ico'}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${IC[n]||''}</svg>`;
 function paintIcons(root){ (root||document).querySelectorAll('[data-ic]').forEach(el => { if (!el.querySelector('svg')) el.insertAdjacentHTML('afterbegin', ico(el.dataset.ic, el.classList.contains('logo')?'':'ico')); }); }
-const NAV = [['Pilotage',[['tableau','Tableau de bord','grid']]],['Activité',[['production','Production','factory'],['ventes','Ventes','cart'],['clients','Clients','users']]],['Matière & stock',[['achats','Achats matière','truck'],['stock','Stock','boxes'],['calcul','Calculatrice papier','calc']]],['Gestion',[['charges','Charges','wallet'],['produits','Produits & prix','tag']]]];
+const NAV = [['Pilotage',[['tableau','Tableau de bord','grid']]],['Activité',[['production','Production','factory'],['ventes','Ventes','cart'],['clients','Clients','users']]],['Matière & stock',[['achats','Achats matière','truck'],['stock','Stock','boxes'],['calcul','Simulateur de coût','calc']]],['Gestion',[['charges','Charges','wallet'],['produits','Produits & prix','tag']]]];
 function drawTabs(){
   const du = S.ventes.filter(v => num(v.quantite)*num(v.prix_unitaire)-num(v.montant_paye) > 0.5).length;
   $('#nav').innerHTML = NAV.map(([g,items]) => `<div class="nav-group">${g}</div>${items.map(([k,l,i]) => `<a href="#${k}" data-tab="${k}" ${k===tab?'aria-current="page"':''}>${ico(i)}<span>${l}</span>${k==='clients'&&du?`<span class="cnt" title="Ventes non payées">${du}</span>`:''}</a>`).join('')}`).join('');
@@ -826,7 +826,7 @@ const QUICK = [
   ['Charges & clients',[['personnel','Paiement du personnel','person','Salarié ou intérimaire'],['electricite',"Facture d'électricité",'bolt','Tous les 2 mois'],['charges','Autre dépense','wallet','Loyer, entretien, livraison…'],['clients','Nouveau client','users','Nom, téléphone, quartier']]]];
 function openQuick(){
   form = null; document.body.classList.remove('menu');
-  const go = NAV.flatMap(([,it])=>it).map(([k,l,i])=>`<button data-goq="${k}" data-txt="${esc(l.toLowerCase())} aller ouvrir">${ico(i)}<span>${l}</span><small>Ouvrir la page</small></button>`).join('');
+  const go = NAV.flatMap(([,it])=>it).map(([k,l,i])=>`<button data-goq="${k}" data-txt="${esc(l.toLowerCase())} aller ouvrir${k==='calcul'?' calculatrice papier prix marge':''}">${ico(i)}<span>${l}</span><small>Ouvrir la page</small></button>`).join('');
   $('#layer').innerHTML = `<div class="qmenu" data-act="closeq"><div class="qbox" role="dialog" aria-modal="true" aria-label="Nouvelle saisie">
     <div class="qhead">${ico('search')}<input id="qinput" placeholder="Que voulez-vous enregistrer ou ouvrir ?" autocomplete="off" aria-label="Rechercher"><kbd>Échap</kbd></div>
     <div class="qbody">${QUICK.map(([g,items])=>`<div class="qblock"><div class="qsec">${g}</div><div class="qgrid">${items.map(([c,l,i,h])=>`<button data-qadd="${c}" data-txt="${esc((l+' '+h).toLowerCase())}">${ico(i)}<span>${l}</span><small>${h}</small></button>`).join('')}</div></div>`).join('')}
