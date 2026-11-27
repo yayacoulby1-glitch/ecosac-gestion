@@ -630,7 +630,7 @@ const PERIODES = [['mois','Ce mois'],['prec','Mois dernier'],['3m','3 derniers m
 // ---------- Calculatrice : sacs par tonne, colle et coût de fabrication ----------
 // Feuille : largeur = 2 × largeur du sac + 2 × soufflet + collage latéral ; longueur = hauteur + coef × soufflet + rabat.
 // Colle (estimation) : latérale = longueur du joint (longueur de feuille) × g par mètre ; fond = (largeur + soufflet) × g par mètre.
-const MARGES_DEF = {collage:3, rabat:3, coef:0.75, chutes:4, gl:0.6, gf:1.0, plp:177000, plk:150, pfp:55000, pfk:25};
+const MARGES_DEF = {collage:3, rabat:3, coef:0.75, chutes:4, cible:30, gl:0.6, gf:1.0, plp:177000, plk:150, pfp:55000, pfk:25};
 function marges(){ const c = config(); const r = {}; for (const k in MARGES_DEF) r[k] = c['m_'+k] !== undefined && c['m_'+k] !== '' ? num(c['m_'+k]) : MARGES_DEF[k]; return r; }
 function calcSac(x){
   const L = num(x.L), H = num(x.H), Sf = num(x.S), g = num(x.g), m = {...MARGES_DEF, ...(x.m || marges())};
@@ -649,6 +649,12 @@ function coutSac(x, r){
   return {pk, papier, colle, impr, frais, total: papier + colle + impr + frais};
 }
 function fraisSac(){ const [a,b] = (()=>{ const d = new Date(); const e = d.toISOString().slice(0,10); d.setMonth(d.getMonth()-3); return [d.toISOString().slice(0,10), e]; })(); return analyse(a,b).fixeParSac; }
+// Prix de vente : saisi dans la calculatrice, sinon celui du sac choisi dans le catalogue.
+const pvDe = x => x.pv !== '' && x.pv != null ? num(x.pv) : num(prod(x.prod)?.prix_vente);
+// Prix conseillé : coût ÷ (1 − marge cible), arrondi au FCFA (au 5 FCFA au-dessus de 100).
+function prixConseille(cout, cible){ if (!cout || cible >= 100) return 0; const p = cout/(1 - cible/100); return p >= 100 ? Math.ceil(p/5)*5 : Math.ceil(p); }
+function margeHtml(pv, cout){ if (!pv || !cout) return ''; const mg = pv - cout, pc = mg/pv*100;
+  return `<b class="${mg>=0?'good-t':'bad-t'}">${mg>=0?'Bénéfice':'Perte'} ${mg>=0?'':'−'}${F2(Math.abs(mg))} (${mg>=0?'':'−'}${nf0.format(Math.abs(pc))} %)</b>`; }
 const TYPES_EST = [['PRV','Prévisionnel'],['DEV','Devis client'],['SIM','Simulation']];
 function nextRef(type){
   const d = new Date(), p = `${type}-${String(d.getFullYear()).slice(2)}${String(d.getMonth()+1).padStart(2,'0')}-`;
@@ -664,7 +670,7 @@ function vCalcul(){
   const opts = S.produits.filter(p=>num(p.largeur)&&num(p.longueur)).map(p=>`<option value="${esc(p.id)}" ${CX.prod===p.id?'selected':''}>${esc(p.nom)} · ${dims(p)}</option>`).join('');
   const inp = (k, l, h, ph) => `<div class="field"><label for="cx_${k}">${l}</label><input id="cx_${k}" data-cx="${k}" type="number" inputmode="decimal" step="any" min="0" value="${esc(CX[k]??'')}" ${ph?`placeholder="${esc(ph)}"`:''}>${h?`<small class="h">${h}</small>`:''}</div>`;
   const minp = (k, l, h) => `<div class="field"><label for="cm_${k}">${l}</label><input id="cm_${k}" data-cm="${k}" type="number" inputmode="decimal" step="any" min="0" value="${esc(m[k])}">${h?`<small class="h">${h}</small>`:''}</div>`;
-  const rows = S.produits.map(p => ({p, r: calcSac({L:p.largeur, H:p.longueur, S:p.cote, g:p.grammage, m})})).filter(x=>x.r);
+  const rows = S.produits.map(p => { const x = {L:p.largeur, H:p.longueur, S:p.cote, g:p.grammage, m, pk:CX.pk, impr:p.cout_impression, frais:CX.frais}; const r = calcSac(x); return {p, r, c: r && coutSac(x, r)}; }).filter(x=>x.r);
   return `<div class="head"><div><h2>Calculatrice papier</h2><p class="lead">Sacs par tonne, papier et colle consommés, et coût de fabrication d'un sac. Les résultats se mettent à jour pendant la saisie. Enregistrez un calcul pour le retrouver plus tard.</p></div></div>
   <div class="grid calc-grid">
     <div class="panel"><h3>Le sac</h3>
@@ -678,11 +684,11 @@ function vCalcul(){
       <div class="fields flat">
         ${inp('pk','Prix du papier (FCFA/kg)', mk ? `Vide = moyenne de vos conteneurs (${F(mk)}/kg)` : 'Ou saisissez vos conteneurs dans Achats', mk ? Math.round(mk) : '')}
         ${inp('impr','Impression par sac (FCFA)','Encre, cliché… 0 si sans impression')}
-        ${inp('pv','Prix de vente par sac (FCFA)','Facultatif, pour voir la marge')}
+        ${inp('pv','Prix de vente par sac (FCFA)', prod(CX.prod)&&num(prod(CX.prod).prix_vente) ? `Vide = prix du catalogue (${F2(num(prod(CX.prod).prix_vente))})` : 'Facultatif, pour voir la marge', prod(CX.prod)&&num(prod(CX.prod).prix_vente) ? num(prod(CX.prod).prix_vente) : '')}
         <div class="field"><label class="check"><input type="checkbox" data-cx="frais" ${CX.frais?'checked':''}> Ajouter les frais généraux</label><small class="h">Personnel, électricité, fournitures… par sac, moyenne des 3 derniers mois</small></div>
       </div>
       <details class="marges" ${CXm||CXopen?'open':''}><summary>Marges et colle <span class="note" id="cm_sum">${margesTxt(m)}</span></summary>
-        <div class="fields flat">${minp('collage','Collage latéral (cm)','Ajouté à la largeur de la feuille')}${minp('rabat','Rabat (cm)','Ajouté à la longueur de la feuille')}${minp('coef','Coefficient du fond','Part du soufflet repliée au fond (0,75)')}${minp('chutes','Taux de chutes (%)','Papier perdu : réglages, ratés, fins de bobine')}</div>
+        <div class="fields flat">${minp('collage','Collage latéral (cm)','Ajouté à la largeur de la feuille')}${minp('rabat','Rabat (cm)','Ajouté à la longueur de la feuille')}${minp('coef','Coefficient du fond','Part du soufflet repliée au fond (0,75)')}${minp('chutes','Taux de chutes (%)','Papier perdu : réglages, ratés, fins de bobine')}${minp('cible','Marge cible (%)','Pour le prix de vente conseillé')}</div>
         <div class="subh">Colle latérale</div>
         <div class="fields flat three">${minp('gl','Grammes par mètre de joint','Estimation à ajuster')}${minp('plp','Prix du lot (FCFA)')}${minp('plk','Poids du lot (kg)')}</div>
         <div class="subh">Colle de fond</div>
@@ -695,20 +701,22 @@ function vCalcul(){
   </div>
   <div class="head" style="margin:32px 0 14px"><div><h3 style="margin:0">Estimations enregistrées</h3><p class="lead">Référence : <b>PRV</b> prévisionnel (production prévue), <b>DEV</b> devis client, <b>SIM</b> simulation (nouveau format, essai), puis l'année et le mois, puis un numéro. Exemple : PRV-${String(new Date().getFullYear()).slice(2)}${String(new Date().getMonth()+1).padStart(2,'0')}-01.</p></div></div>
   ${listBlock('estimations')}
-  ${rows.length?`<h3 style="margin:28px 0 12px">Votre catalogue</h3><div class="tw"><table><thead><tr><th>Sac</th><th>Dimensions</th><th class="num">Grammage</th><th class="num">Feuille (cm)</th><th class="num">Papier</th><th class="num">Colle</th><th class="num">Sacs par tonne</th></tr></thead><tbody>
-    ${rows.map(({p,r})=>`<tr><td>${esc(p.nom)}</td><td>${dims(p)}</td><td class="num">${N(p.grammage)} g/m²</td><td class="num">${nf1.format(r.fl)} × ${nf1.format(r.fh)}</td><td class="num">${nf1.format(r.poids)} g</td><td class="num">${nf2.format(r.gL+r.gF)} g</td><td class="num"><b>${N(Math.floor(r.net))}</b></td></tr>`).join('')}
+  ${rows.length?`<h3 style="margin:28px 0 4px">Votre catalogue</h3><p class="note" style="margin:0 0 12px">Coût avec le prix du papier${CX.frais?', les frais généraux':''} et l'impression de chaque sac. Prix conseillé pour ${nf0.format(m.cible)} % de marge.</p><div class="tw"><table><thead><tr><th>Sac</th><th>Format</th><th class="num">Papier + colle</th><th class="num">Sacs / tonne</th><th class="num">Coût / sac</th><th class="num">Prix de vente</th><th class="num">Résultat / sac</th><th class="num">Prix conseillé</th></tr></thead><tbody>
+    ${rows.map(({p,r,c})=>`<tr><td style="white-space:normal;min-width:140px">${esc(p.nom)}</td><td style="white-space:nowrap">${dims(p)} · ${N(p.grammage)} g</td><td class="num" style="white-space:nowrap">${nf1.format(r.poids)} + ${nf1.format(r.gL+r.gF)} g</td><td class="num"><b>${N(Math.floor(r.net))}</b></td><td class="num">${c.pk?F2(c.total):'—'}</td><td class="num">${num(p.prix_vente)?F2(num(p.prix_vente)):'—'}</td><td class="num" style="white-space:nowrap">${c.pk?margeHtml(num(p.prix_vente), c.total).replace(/Bénéfice |Perte /,''):''}</td><td class="num">${c.pk?F2(prixConseille(c.total, num(m.cible))):'—'}</td></tr>`).join('')}
   </tbody></table></div>`:''}`;
 }
-const margesTxt = m => `collage ${nf1.format(m.collage)} cm · rabat ${nf1.format(m.rabat)} cm · fond ${nf2.format(m.coef)} × S · chutes ${nf1.format(m.chutes)} % · colle ${nf1.format(m.gl)} et ${nf1.format(m.gf)} g/m`;
+const margesTxt = m => `marge cible ${nf0.format(m.cible)} % · collage ${nf1.format(m.collage)} cm · rabat ${nf1.format(m.rabat)} cm · fond ${nf2.format(m.coef)} × S · chutes ${nf1.format(m.chutes)} % · colle ${nf1.format(m.gl)} et ${nf1.format(m.gf)} g/m`;
 function calcOut(){
   const m = CXm || marges(); const r = calcSac({...CX, m});
   if (!r) return `<div class="panel"><div class="empty"><b>Saisissez la largeur, la hauteur et le grammage</b>ou choisissez un sac du catalogue.</div></div>`;
-  const c = coutSac(CX, r), bob = num(CX.bob), cmd = num(CX.cmd), pv = num(CX.pv);
+  const c = coutSac(CX, r), bob = num(CX.bob), cmd = num(CX.cmd), pv = pvDe(CX), pc = prixConseille(c.pk ? c.total : 0, num(m.cible));
   const line = (l, v, cls) => `<div class="${cls||''}"><span>${l}</span><span>${v}</span></div>`;
-  const marge = pv ? pv - c.total : null;
+  const marge = pv ? pv - c.total : null, ok = !!c.pk;
   return `<div class="grid kpis cx-kpis">
       ${kpi('Sacs par tonne', N(Math.floor(r.net)), `après ${nf1.format(m.chutes)} % de chutes · ${N(Math.floor(r.brut))} sans chutes`, 'hero')}
-      ${kpi('Coût de fabrication', c.pk || c.impr ? F2(c.total) : '—', c.pk ? `par sac${marge!==null?` · marge ${F2(marge)} (${nf0.format(marge/pv*100)} %)`:''}` : 'Indiquez le prix du papier')}
+      ${kpi('Coût de fabrication', ok ? F2(c.total) : '—', ok ? "par sac" : 'Indiquez le prix du papier')}
+      ${kpi(marge!==null && ok ? (marge>=0?'Bénéfice par sac':'Perte par sac') : 'Marge par sac', marge!==null && ok ? `<span class="${marge>=0?'good-t':'bad-t'}">${marge>=0?'':'−'}${F2(Math.abs(marge))}</span>` : '—', marge!==null && ok ? `${nf0.format(marge/pv*100)} % du prix de vente (${F2(pv)})${CX.pv===''||CX.pv==null?' · prix du catalogue':''}` : 'Choisissez un sac du catalogue ou saisissez un prix de vente', marge!==null && ok && marge<0 ? 'loss' : '')}
+      ${kpi('Prix de vente conseillé', pc ? F2(pc) : '—', pc ? `pour ${nf0.format(m.cible)} % de marge${pv?` · ${pc>pv?'+'+F2(pc-pv)+' par rapport à votre prix':pc<pv?'votre prix est au-dessus':'votre prix est juste'}`:''}` : 'Indiquez le prix du papier')}
     </div>
     <div class="panel" style="margin-top:16px"><h3>Papier</h3><div class="calc cx-detail">
       ${line('Largeur de feuille', `2 × ${nf1.format(num(CX.L))} + 2 × ${nf1.format(num(CX.S))} + ${nf1.format(m.collage)} = <b>${nf1.format(r.fl)} cm</b>`)}
@@ -734,16 +742,17 @@ function calcOut(){
       ${c.impr?line('Impression', F2(c.impr)):''}
       ${CX.frais?line('Frais généraux', c.frais ? F2(c.frais) : '<span class="note">pas encore de production saisie</span>'):''}
       ${line('Total par sac', F2(c.total), 't')}
-      ${pv?line('Prix de vente', F2(pv)):''}
-      ${pv?line('Marge par sac', `<b class="${marge>=0?'good-t':'bad-t'}">${F2(marge)} (${nf0.format(marge/pv*100)} %)</b>`):''}
+      ${pv?line('Prix de vente'+(CX.pv===''||CX.pv==null?' (catalogue)':''), F2(pv)):''}
+      ${pv&&ok?line('Résultat par sac', margeHtml(pv, c.total)):''}
+      ${pc?line(`Prix conseillé (marge ${nf0.format(m.cible)} %)`, `${F2(c.total)} ÷ (1 − ${nf0.format(m.cible)} %) ≈ <b>${F2(pc)}</b>`):''}
       ${cmd?line(`Pour ${N(cmd)} sacs`, `${nf1.format(cmd*r.kgMille/1000)} kg de papier · ${nf1.format(cmd*r.gL/1000)} kg colle latérale · ${nf1.format(cmd*r.gF/1000)} kg colle de fond`, 't'):''}
-      ${cmd?line('Coût total de la quantité', `<b>${F(cmd*c.total)}</b>${pv?` · vente ${F(cmd*pv)} · marge ${F(cmd*marge)}`:''}`):''}
+      ${cmd?line('Coût total de la quantité', `<b>${F(cmd*c.total)}</b>${pv?` · vente ${F(cmd*pv)} · ${marge>=0?'bénéfice':'perte'} ${F(Math.abs(cmd*marge))}`:''}`):''}
     </div>
     <div class="sheetbar" style="padding:14px 0 0;border:0;background:none"><button class="btn primary" data-act="cx-save">${ico('plus')}Enregistrer cette estimation</button><button class="btn" data-act="cx-new">Nouveau calcul</button></div></div>`;
 }
 function onCalcInput(e){
   const t = e.target;
-  if (t.dataset.cx === 'prod') { CX.prod = t.value; const p = prod(t.value); if (p) { CX.L = num(p.largeur)||''; CX.H = num(p.longueur)||''; CX.S = num(p.cote)||0; if (num(p.grammage)) CX.g = num(p.grammage); CX.impr = num(p.cout_impression)||''; CX.pv = num(p.prix_vente)||''; } render(); }
+  if (t.dataset.cx === 'prod') { CX.prod = t.value; const p = prod(t.value); if (p) { CX.L = num(p.largeur)||''; CX.H = num(p.longueur)||''; CX.S = num(p.cote)||0; if (num(p.grammage)) CX.g = num(p.grammage); CX.impr = num(p.cout_impression)||''; } CX.pv = ''; render(); }
   else if (t.dataset.cx === 'frais') CX.frais = t.checked;
   else if (t.dataset.cx) { CX[t.dataset.cx] = t.value; if (['L','H','S','g'].includes(t.dataset.cx) && CX.prod) { CX.prod = ''; const s = $('#cx_prod'); if (s) s.value = ''; } }
   else if (t.dataset.cm) { CXm = {...(CXm || marges()), [t.dataset.cm]: t.value === '' ? 0 : num(t.value)}; const sm = $('#cm_sum'); if (sm) sm.textContent = margesTxt(CXm); }
@@ -759,7 +768,7 @@ function cxSave(){
   const c = coutSac(CX, r); const p = prod(CX.prod);
   const nom = `${p ? p.nom : 'Sac'} ${nf1.format(num(CX.L))}×${nf1.format(num(CX.H))}${num(CX.S)?'×'+nf1.format(num(CX.S)):''} · ${N(CX.g)} g${num(CX.cmd)?' · '+N(num(CX.cmd))+' sacs':''}`;
   openForm('estimations', null, {type:'PRV', reference:nextRef('PRV'), nom, quantite: num(CX.cmd)||'', produit: CX.prod||'',
-    cx:{...CX}, m:{...m}, res:{poids:+r.poids.toFixed(2), net:Math.floor(r.net), gL:+r.gL.toFixed(3), gF:+r.gF.toFixed(3), colle:+c.colle.toFixed(3), papier:+c.papier.toFixed(3), total:+c.total.toFixed(3)}});
+    cx:{...CX}, m:{...m}, res:{poids:+r.poids.toFixed(2), net:Math.floor(r.net), gL:+r.gL.toFixed(3), gF:+r.gF.toFixed(3), colle:+c.colle.toFixed(3), papier:+c.papier.toFixed(3), total:+c.total.toFixed(3), pv:pvDe(CX), conseille:prixConseille(c.pk?c.total:0, num(m.cible))}});
 }
 function cxLoad(id){
   const e = S.estimations.find(x => x.id === id); if (!e || !e.cx) return;
@@ -921,7 +930,7 @@ function vTableau(){
     <div class="panel"><h3>Sacs finis en stock</h3>${hbars(st.finis.filter(f=>f.reste>0).sort((x,y)=>y.reste-x.reste).map(f=>({l:f.p.nom,v:f.reste,t:N(f.reste)+' sacs',s:F(f.valeur)})),'var(--c3)','Aucun sac en stock.')}</div>
   </div>
   <h3 style="margin-top:22px">Prix de revient et marge par sac</h3>
-  <div class="tw"><table><thead><tr><th>Produit</th><th class="num">Papier</th><th class="num">Colle</th><th class="num">Impression</th><th class="num">Frais fixes</th><th class="num">Prix de revient</th><th class="num">Prix de vente</th><th class="num">Marge / sac</th><th class="num">Marge</th><th class="num">Fabriqués</th><th>Vendus</th></tr></thead><tbody>
+  <div class="tw"><table><thead><tr><th>Produit</th><th class="num">Papier + colle</th><th class="num">Impression</th><th class="num">Frais fixes</th><th class="num">Prix de revient</th><th class="num">Prix de vente</th><th class="num">Marge / sac</th><th class="num">Marge</th><th class="num">Fabriqués</th><th>Vendus</th></tr></thead><tbody>
   ${rows.map(r=>`<tr><td>${esc(r.p.nom)}</td><td class="num">${F2(r.c.papier)}</td><td class="num">${F2(r.c.colle)}</td><td class="num">${F2(r.c.impr)}</td><td class="num">${F2(r.c.fixe)}</td><td class="num"><b>${F2(r.c.total)}</b></td><td class="num">${r.pv?F2(r.pv):'<span class="pill warn">à renseigner</span>'}</td><td class="num ${r.mu>=0?'pos':'neg'}">${r.pv?F2(r.mu):'—'}</td><td class="num">${r.pv?`<span class="pill ${r.mp>=25?'good':r.mp>=10?'warn':'bad'}">${nf0.format(r.mp)} %</span>`:'—'}</td><td class="num">${N(r.d.q)}</td><td><div style="display:flex;align-items:center;gap:8px"><span style="min-width:48px;text-align:right;font-variant-numeric:tabular-nums">${N(r.d.vq)}</span><div class="bar" style="width:70px;margin:0"><i style="width:${r.d.vq/mx*100}%"></i></div></div></td></tr>`).join('')}
   </tbody></table></div>
   <p class="note">Papier et colle : coût moyen d'achat rendu usine (bobines + transport + douane + frais) × quantité réellement utilisée par sac. Frais fixes : personnel + électricité + fournitures (graisse, huile, encre, cartons, scotch…) + autres dépenses de la période, répartis à parts égales sur tous les sacs fabriqués. Marge en vert à partir de 25 %, orange de 10 à 25 %, rouge en dessous.</p>`;
