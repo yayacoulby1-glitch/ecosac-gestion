@@ -257,8 +257,9 @@ SCHEMAS.cliches = {
   title:"Cliché d'impression", plural:'Clichés',
   fields:[
     {k:'date',label:'Date de fabrication',type:'date',req:1,def:today},
-    {k:'client',label:'Client',type:'client',req:1},
-    {k:'logo',label:'Logo / motif gravé',type:'text',req:1,h:'Ex. Logo + téléphone, 1 couleur'},
+    {k:'genre',label:'Type de cliché',type:'select',options:[['perso',"Personnalisé (logo d'un client)"],['standard','Standard (motif commun à tous les clients)']],def:'perso'},
+    {k:'client',label:'Client (cliché personnalisé)',type:'client',h:'Laisser vide pour un cliché standard'},
+    {k:'logo',label:'Logo / motif gravé',type:'text',req:1,h:'Ex. « Bon appétit », croissant, logo + téléphone…'},
     {k:'produit',label:'Pour quel sac',type:'product'},
     {k:'couleurs',label:'Nombre de couleurs',type:'number',def:1},
     {k:'cout',label:'Coût du cliché (FCFA)',type:'number',req:1,h:'Plaque plastique + gravure'},
@@ -267,11 +268,12 @@ SCHEMAS.cliches = {
     {k:'notes',label:'Notes (emplacement, cylindre…)',type:'textarea',full:1},
   ],
   calc: v => { const n = v.id ? clicheSacs(v.id) : 0; return [['Reste à votre charge', F(num(v.cout)-num(v.refacture)),'t'],...(n?[['Sacs imprimés avec ce cliché', N(n)],['Coût du cliché par sac', F2((num(v.cout)-num(v.refacture))/n)]]:[])]; },
-  cols:[['date','Date',fdate],[r=>clientNom(r.client),'Client'],['logo','Logo'],[r=>r.produit?prodNom(r.produit):'','Sac'],['cout','Coût',F,'num'],['refacture','Facturé',v=>v?F(v):'','num'],
+  cols:[['date','Date',fdate],[r=>r.genre==='standard'?'<span class="pill good">Standard</span>':esc(clientNom(r.client)),'Client',null,'html'],['logo','Logo'],[r=>r.produit?prodNom(r.produit):'','Sac'],['cout','Coût',F,'num'],['refacture','Facturé',v=>v?F(v):'','num'],
     [r=>clicheSacs(r.id),'Sacs imprimés',N,'num'],[r=>{const n=clicheSacs(r.id);return n?(num(r.cout)-num(r.refacture))/n:0},'Coût / sac',v=>v?F2(v):'','num'],
     [r=>({actif:'<span class="pill good">En service</span>',use:'<span class="pill warn">Usé</span>',archive:'<span class="pill">Rangé</span>'})[r.statut]||'','État',null,'html']],
   sum:['Coût','Facturé','Sacs imprimés'],
 };
+const clicheNom = c => c.genre==='standard' ? 'Standard' : clientNom(c.client);
 const clicheSacs = id => S.ventes.filter(v => v.cliche === id).reduce((s,v)=>s+num(v.quantite),0);
 SCHEMAS.numerique = {
   title:'Impression numérique', plural:'Impression numérique',
@@ -652,8 +654,10 @@ function calcSac(x){
 function coutSac(x, r){
   const pk = x.pk !== '' && x.pk != null ? num(x.pk) : moyennes().kraft;
   const papier = r.kgMille/1000*pk, colle = r.colleCout, impr = num(x.impr);
+  // Cliché : standard = déjà payé (0) ; nouveau personnalisé = (coût − part facturée) réparti sur la quantité
+  const qte = num(x.cmd), clicheTot = x.clich==='new' ? Math.max(0, num(x.clc) - num(x.clr)) : 0, cliche = clicheTot && qte ? clicheTot/qte : 0;
   const frais = x.frais ? fraisSac() : 0;
-  return {pk, papier, colle, impr, frais, total: papier + colle + impr + frais};
+  return {pk, papier, colle, impr, frais, cliche, clicheTot, total: papier + colle + impr + frais + cliche};
 }
 function fraisSac(){ const [a,b] = (()=>{ const d = new Date(); const e = d.toISOString().slice(0,10); d.setMonth(d.getMonth()-3); return [d.toISOString().slice(0,10), e]; })(); return analyse(a,b).fixeParSac; }
 // Prix de vente : saisi dans la calculatrice, sinon celui du sac choisi dans le catalogue.
@@ -669,7 +673,7 @@ function nextRef(type){
   const n = S.estimations.filter(e => String(e.reference||'').startsWith(p)).map(e => +String(e.reference).slice(p.length)||0);
   return p + String((n.length ? Math.max(...n) : 0) + 1).padStart(2,'0');
 }
-const CX_DEF = {prod:'', L:'', H:'', S:'', g:80, bob:'', cmd:'', pk:'', impr:'', pvl:'', frais:false};
+const CX_DEF = {prod:'', L:'', H:'', S:'', g:80, bob:'', cmd:'', pk:'', impr:'', pvl:'', frais:false, clich:'', clc:'', clr:''};
 let CX = {...CX_DEF}, CXm = null, CXopen = false;
 document.addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('marges')) CXopen = e.target.open; }, true);
 try { const s = JSON.parse(localStorage.getItem(LS+'-calc')||'null'); if (s) { delete s.pv; CX = {...CX, ...s}; } } catch(e){}
@@ -691,7 +695,9 @@ function vCalcul(){
       <h3 style="margin-top:22px">Coûts</h3>
       <div class="fields flat">
         ${inp('pk','Prix du papier (FCFA/kg)', mk ? `Vide = moyenne de vos conteneurs (${F(mk)}/kg)` : 'Ou saisissez vos conteneurs dans Achats', mk ? Math.round(mk) : '')}
-        ${inp('impr','Impression par sac (FCFA)','Encre, cliché… 0 si sans impression')}
+        ${inp('impr','Encre / impression par sac (FCFA)','0 si sans impression')}
+        <div class="field"><label for="cx_clich">Cliché</label><select id="cx_clich" data-cx="clich"><option value="" ${!CX.clich?'selected':''}>Aucun (sans impression)</option><option value="std" ${CX.clich==='std'?'selected':''}>Cliché standard (déjà payé)</option><option value="new" ${CX.clich==='new'?'selected':''}>Nouveau cliché personnalisé</option></select><small class="h">${S.cliches.some(c=>c.genre==='standard'&&c.statut!=='archive')?'Standards : '+esc(S.cliches.filter(c=>c.genre==='standard'&&c.statut!=='archive').map(c=>c.logo).join(', ')):'Un cliché standard ne coûte rien de plus'}</small></div>
+        ${CX.clich==='new'?inp('clc','Coût du cliché (FCFA)','Plaque + gravure')+inp('clr','Part facturée au client (FCFA)','0 si offert'):''}
         ${inp('pvl','Prix de vente du lot de 1 000 (FCFA)', pvSac(prod(CX.prod)) ? `Vide = prix du catalogue (${F(pvLot(prod(CX.prod)))})` : 'Facultatif, pour voir la marge', pvSac(prod(CX.prod)) ? pvLot(prod(CX.prod)) : '')}
         <div class="field"><label class="check"><input type="checkbox" data-cx="frais" ${CX.frais?'checked':''}> Ajouter les frais généraux</label><small class="h">Personnel, électricité, fournitures… par sac, moyenne des 3 derniers mois</small></div>
       </div>
@@ -747,7 +753,9 @@ function calcOut(){
     <div class="panel" style="margin-top:16px"><h3>Coût de fabrication d'un sac</h3><div class="calc cx-detail">
       ${line('Papier (chutes comprises)', c.pk ? `${nf1.format(r.kgMille)} g × ${F(c.pk)}/kg = ${F2(c.papier)}` : '<span class="note">prix du papier manquant</span>')}
       ${line('Colle latérale + fond', F2(c.colle))}
-      ${c.impr?line('Impression', F2(c.impr)):''}
+      ${c.impr?line('Encre / impression', F2(c.impr)):''}
+      ${CX.clich==='std'?line('Cliché standard', 'déjà payé, 0 FCFA'):''}
+      ${CX.clich==='new'?line('Cliché personnalisé', c.clicheTot ? (num(CX.cmd) ? `${F(c.clicheTot)} ÷ ${N(num(CX.cmd))} sacs = ${F2(c.cliche)}` : '<span class="note">indiquez la quantité à produire pour le répartir</span>') : 'payé par le client'):''}
       ${CX.frais?line('Frais généraux', c.frais ? F2(c.frais) : '<span class="note">pas encore de production saisie</span>'):''}
       ${line('Total par sac', F2(c.total), 't')}
       ${line('Coût du lot de 1 000 sacs', `<b>${F(c.total*LOT)}</b>`)}
@@ -764,6 +772,7 @@ function onCalcInput(e){
   const t = e.target;
   if (t.dataset.cx === 'prod') { CX.prod = t.value; const p = prod(t.value); if (p) { CX.L = num(p.largeur)||''; CX.H = num(p.longueur)||''; CX.S = num(p.cote)||0; if (num(p.grammage)) CX.g = num(p.grammage); CX.impr = num(p.cout_impression)||''; } CX.pvl = ''; render(); }
   else if (t.dataset.cx === 'frais') CX.frais = t.checked;
+  else if (t.dataset.cx === 'clich') { CX.clich = t.value; try { localStorage.setItem(LS+'-calc', JSON.stringify(CX)); } catch(_){} render(); return; }
   else if (t.dataset.cx) { CX[t.dataset.cx] = t.value; if (['L','H','S','g'].includes(t.dataset.cx) && CX.prod) { CX.prod = ''; const s = $('#cx_prod'); if (s) s.value = ''; } }
   else if (t.dataset.cm) { CXm = {...(CXm || marges()), [t.dataset.cm]: t.value === '' ? 0 : num(t.value)}; const sm = $('#cm_sum'); if (sm) sm.textContent = margesTxt(CXm); }
   try { localStorage.setItem(LS+'-calc', JSON.stringify(CX)); } catch(_){}
@@ -1194,8 +1203,8 @@ function fieldHtml(f, v){
   if (f.type==='select') input = `<select id="${id}" data-k="${f.k}">${f.options.map(([k,l])=>`<option value="${k}" ${String(val)===k?'selected':''}>${esc(l)}</option>`).join('')}</select>`;
   else if (f.type==='product') input = `<select id="${id}" data-k="${f.k}"><option value="">Choisir…</option>${Object.entries(CATS).map(([c,l])=>{const ps=sortedProds().filter(p=>p.categorie===c); return ps.length?`<optgroup label="${l}">${ps.map(p=>`<option value="${esc(p.id)}" ${val===p.id?'selected':''}>${esc(p.nom)}${dims(p)?' ('+dims(p)+' cm)':''}</option>`).join('')}</optgroup>`:''}).join('')}</select>`;
   else if (f.type==='client') input = `<select id="${id}" data-k="${f.k}"><option value="">Choisir…</option>${[...S.clients].sort((a,b)=>String(a.nom).localeCompare(b.nom,'fr')).map(c=>`<option value="${esc(c.id)}" ${val===c.id?'selected':''}>${esc(c.nom)}</option>`).join('')}${val&&!S.clients.some(c=>c.id===val)?`<option value="${esc(val)}" selected>${esc(lastClient||'Nouveau client')}</option>`:''}<option value="__new">+ Nouveau client…</option></select>`;
-  else if (f.type==='cliche') { const cl = [...S.cliches].sort((a,b)=>(a.client===form?.v?.client?0:1)-(b.client===form?.v?.client?0:1) || clientNom(a.client).localeCompare(clientNom(b.client),'fr'));
-    input = `<select id="${id}" data-k="${f.k}"><option value="">Aucun (sac sans impression)</option>${cl.map(c=>`<option value="${esc(c.id)}" ${val===c.id?'selected':''}>${esc(clientNom(c.client))} : ${esc(c.logo)}</option>`).join('')}</select>`; }
+  else if (f.type==='cliche') { const cl = [...S.cliches].filter(c => c.statut!=='archive' || c.id===val).sort((a,b)=>(a.client===form?.v?.client?0:a.genre==='standard'?1:2)-(b.client===form?.v?.client?0:b.genre==='standard'?1:2) || clicheNom(a).localeCompare(clicheNom(b),'fr'));
+    input = `<select id="${id}" data-k="${f.k}"><option value="">Aucun (sac sans impression)</option>${cl.map(c=>`<option value="${esc(c.id)}" ${val===c.id?'selected':''}>${esc(clicheNom(c))} : ${esc(c.logo)}</option>`).join('')}</select>`; }
   else if (f.type==='container') input = `<select id="${id}" data-k="${f.k}"><option value="">—</option>${[...S.conteneurs].sort((a,b)=>String(b.date).localeCompare(a.date)).map(c=>`<option value="${esc(c.id)}" ${val===c.id?'selected':''}>${esc(c.reference)} (${fdate(c.date)})</option>`).join('')}</select>`;
   else if (f.type==='article') { const noms = [...new Set(ARTICLES.concat(S.fournitures.map(x=>String(x.article||'').trim()).filter(Boolean)))].sort((a,b)=>a.localeCompare(b,'fr'));
     input = `<input id="${id}" data-k="${f.k}" list="${id}_l" autocomplete="off" value="${esc(val)}"><datalist id="${id}_l">${noms.map(n=>`<option value="${esc(n)}"></option>`).join('')}</datalist>`; }
@@ -1236,6 +1245,7 @@ function openSub(){ pending = {...form}; form = {col:'clients', id:null, v:{type
 async function submit(){
   const sc = SCHEMAS[form.col];
   const miss = sc.fields.filter(f => f.req && (form.v[f.k]===undefined || String(form.v[f.k]).trim()==='')).map(f=>f.label);
+  if (form.col==='cliches' && form.v.genre!=='standard' && !form.v.client) miss.push('Client (ou choisissez « Standard »)');
   if (form.col==='conteneurs' && form.v.devise && form.v.devise!=='FCFA' && !num(form.v.taux)) miss.push('Taux de change');
   if (miss.length) return drawForm('À compléter : ' + miss.join(', ') + '.');
   if (form.col==='electricite' && form.v.fin < form.v.debut) return drawForm('La date de fin doit être après la date de début.');
