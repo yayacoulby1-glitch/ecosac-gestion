@@ -2,13 +2,13 @@
    Layout : menu latéral clair (ordinateur) + barre supérieure collante avec palette de commandes ; tiroir + barre du bas (téléphone).
    Neutres « stone » chauds, un seul accent kraft, couleurs de données validées (palette catégorielle de référence, ordre fixe). */
 :root{
-  --bg:#eef3ec; --bg-glow:#dcebd6; --surface:#fcfdfb; --surface2:#f0f5ee; --surface3:#e2ebde; --line:#dbe5d6; --line2:#c5d3be;
+  --bg:#dfe9db; --bg-glow:#c9dfc0; --surface:#fcfdfb; --surface2:#f0f5ee; --surface3:#e2ebde; --line:#d2dfcc; --line2:#c5d3be;
   --fg:#15231a; --fg2:#2f4436; --muted:#62756a; --faint:#94a69a;
   --accent:#2f7a47; --accent-soft:#e3f0e3; --accent-ring:rgba(47,122,71,.22);
   --btn:#1d3b28; --btn-fg:#f4f9f2;
   --good:#15803d; --good-soft:#e3f2e6; --warn:#b45309; --warn-soft:#fbf1e1; --bad:#c2352b; --bad-soft:#fcebea;
   --c1:#257de0; --c2:#f47230; --c3:#00b894; --c4:#f2a600; --c5:#ee7fac; --c6:#008a17; --c7:#6a4ce2; --c8:#ec4647; --cg:#c3cfbf;
-  --side:#e6eee2; --side-fg:#1d2e23; --side-muted:#6a7d70; --side-hi:#d8e4d3;
+  --side:#d6e3d0; --side-fg:#1d2e23; --side-muted:#5d7063; --side-hi:#c6d8bf;
   --f-display:"Geist","Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
   --f-body:"Inter",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   --r:14px; --r-sm:9px;
